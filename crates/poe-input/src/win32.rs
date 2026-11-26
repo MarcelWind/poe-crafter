@@ -17,7 +17,7 @@ use winapi::um::winuser::{
     IsIconic, IsWindowVisible, SendInput, SetCursorPos, SetForegroundWindow, SetProcessDPIAware,
     ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_MENU, VK_SHIFT,
+    MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_SHIFT,
 };
 
 use crate::calibration::NormPoint;
@@ -240,11 +240,12 @@ impl Win32Game {
     fn read_item_at(&mut self, point: NormPoint) -> Result<String, InputError> {
         self.move_to(point)?;
         self.require_foreground()?;
+
+        // Advanced Mod Descriptions is enabled, so Ctrl+C already includes the
+        // affix headers, tiers, and roll ranges.
         self.clear_clipboard()?;
-        send_key_combo(&[VK_CONTROL as u32, VK_MENU as u32, VK_C_KEY])?;
-        let text = self
-            .wait_for_clipboard(|text| text.contains("Item Class:") && text.contains("Rarity:"))?;
-        Ok(text)
+        send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
+        self.wait_for_clipboard(looks_like_equipment_text)
     }
 
     pub fn read_currency(&mut self, point: NormPoint) -> Result<u32, InputError> {
@@ -503,6 +504,14 @@ fn send_input(input: &INPUT) -> Result<(), InputError> {
         return Err(InputError::Input("SendInput failed".to_string()));
     }
     Ok(())
+}
+
+fn looks_like_equipment_text(text: &str) -> bool {
+    text.contains("Item Class:")
+        && (text.contains("Rarity: Normal")
+            || text.contains("Rarity: Magic")
+            || text.contains("Rarity: Rare")
+            || text.contains("Rarity: Unique"))
 }
 
 fn parse_stack_size(text: &str) -> Option<u32> {

@@ -81,8 +81,9 @@ not supported.
 Place all currency stacks in the inventory. The target item can be in the stash
 or inventory, but the stash/inventory must stay open during the run.
 
-Enable Advanced Mod Descriptions in the game options. Item reads use
-`Ctrl+Alt+C`; currency reads use `Ctrl+C`.
+Enable Advanced Mod Descriptions in the game options. Item and currency reads
+both use `Ctrl+C`; with Advanced Mod Descriptions enabled, item copies include
+the affix headers, tiers, and roll ranges.
 
 ## Commands
 
