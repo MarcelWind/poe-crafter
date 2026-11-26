@@ -17,7 +17,7 @@ The session treats the clipboard and currency counts as ground truth.
 
 Before each action:
 
-- F12 emergency stop is checked.
+- The configured emergency-stop hotkey is checked.
 - The game window must be foreground.
 - The item must parse as normal, magic, or rare with an item class and item
   level.
@@ -72,9 +72,10 @@ poe craft calibrate --target scour
 poe craft calibrate --target chaos
 ```
 
-For slot targets, focus Path of Exile, hover the target slot, and press F8.
-For `panel`, hover a stable pixel on the open panel instead. Progress is saved
-immediately. `poe craft calibrate --list` shows captured points.
+For slot targets, focus Path of Exile, hover the target slot, and press the
+configured calibrate key (F8 by default). For `panel`, hover a stable pixel on
+the open panel instead. Progress is saved immediately.
+`poe craft calibrate --list` shows captured points.
 
 `panel` is an optional guard: hover a stable pixel on the open stash or
 inventory panel. The tool samples its color and checks it before each client
@@ -89,8 +90,26 @@ Place all currency stacks in the inventory. The target item can be in the stash
 or inventory, but the stash/inventory must stay open during the run.
 
 Enable Advanced Mod Descriptions in the game options. Item and currency reads
-both use `Ctrl+C`; with Advanced Mod Descriptions enabled, item copies include
-the affix headers, tiers, and roll ranges.
+both use the configured copy shortcut (`Ctrl+C` by default); with Advanced Mod
+Descriptions enabled, item copies include the affix headers, tiers, and roll
+ranges.
+
+## Hotkeys
+
+Hotkeys live in `config.toml` and can be edited in the UI Settings tab or
+supplied to CLI commands with `--config`:
+
+```toml
+[hotkeys]
+start = "F9"
+stop = "F12"
+calibrate = "F8"
+copy = "Ctrl+C"
+```
+
+Defaults are used when the file is absent. Start is a UI-only global shortcut;
+stop, calibrate, and copy apply to both CLI and UI sessions. A missing or
+invalid config aborts before any click.
 
 ## Commands
 
@@ -167,7 +186,7 @@ presses, and clipboard polling; they are not part of the between-action delay.
 
 ## Emergency stop and failure behavior
 
-- F12 cancels the session.
+- The configured stop hotkey cancels the session (F12 by default).
 - Losing game focus aborts.
 - Missing calibration aborts before any click.
 - A missing currency, unchanged currency count, unreadable item, changed item
@@ -181,7 +200,8 @@ presses, and clipboard polling; they are not part of the between-action delay.
   template matching. It catches a closed panel but not every UI overlay. Keep
   the stash open and use conservative `--once`/dry-run checks.
 - There is no cursor-item guard. If a click is missed while a stack is held,
-  F12 or a session abort releases Shift; inspect the cursor before retrying.
+  the stop hotkey or a session abort releases Shift; inspect the cursor before
+  retrying.
 - Only normal, magic, and rare items are accepted.
 - Only the Phase 2 action set is implemented: transmute, alt, aug, regal,
   alchemy, scouring, and chaos. Essence, fossil, bench, eldritch, and veiled
@@ -191,6 +211,6 @@ presses, and clipboard polling; they are not part of the between-action delay.
   level as the game.
 - The process is system-DPI aware, not per-monitor. Multi-monitor setups with
   different scaling factors may need re-calibration or a single-scale display.
-- F8/F12/F12 polling and SendInput are global. Automation is a game Terms of
+- Hotkey polling and SendInput are global. Automation is a game Terms of
   Service and ban risk.
 - Logs contain raw item text; `/logs/` is ignored by git.

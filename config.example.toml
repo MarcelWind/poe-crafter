@@ -1,0 +1,5 @@
+[hotkeys]
+start = "F9"
+stop = "F12"
+calibrate = "F8"
+copy = "Ctrl+C"

@@ -8,7 +8,7 @@ use poe_craft::{
     evaluate, next_action, simulate_with_options, ItemState, Plan, Pool, Requirement, Simulator,
 };
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
-use poe_input::{Calibration, Color, Win32Game, Win32GameIo, TARGET_PANEL};
+use poe_input::{AppConfig, Calibration, Color, Win32Game, Win32GameIo, TARGET_PANEL};
 use poe_item::{parse_item, ResolvedItem, Resolver};
 use poe_session::{CraftSession, SessionConfig, SessionLogger};
 use poe_timing::DelaySettings;
@@ -59,22 +59,28 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum CraftCommand {
-    /// Show window, calibration, and clipboard status.
+    /// Show window, calibration, clipboard, and hotkey status.
     Doctor {
         #[arg(long)]
         calibration: Option<PathBuf>,
+        /// Hotkey config TOML; defaults are used if the file is absent.
+        #[arg(long, default_value = "config.toml")]
+        config: PathBuf,
     },
-    /// Capture a calibrated point by focusing the game and pressing F8.
+    /// Capture a calibrated point by focusing the game and pressing the calibrate key.
     Calibrate {
         /// item, panel, transmute, alt, aug, regal, alch, scour, or chaos.
         #[arg(long)]
         target: Option<String>,
         #[arg(long)]
         calibration: Option<PathBuf>,
+        /// Hotkey config TOML; defaults are used if the file is absent.
+        #[arg(long, default_value = "config.toml")]
+        config: PathBuf,
         /// Print current calibration instead of capturing.
         #[arg(long)]
         list: bool,
-        /// Seconds to wait for the game and F8.
+        /// Seconds to wait for the game and calibrate key.
         #[arg(long, default_value_t = 15)]
         timeout_secs: u64,
     },
@@ -109,6 +115,9 @@ enum CraftCommand {
         /// Re-pick the currency for every use instead of holding Shift.
         #[arg(long)]
         no_hold_currency: bool,
+        /// Hotkey config TOML; defaults are used if the file is absent.
+        #[arg(long, default_value = "config.toml")]
+        config: PathBuf,
         #[arg(long)]
         json: bool,
     },
@@ -207,15 +216,20 @@ fn main() -> Result<()> {
             json,
         } => inspect(cache.as_path(), item.as_path(), all, json),
         Command::Craft { command } => match command {
-            CraftCommand::Doctor { calibration } => craft_doctor(calibration.as_deref()),
+            CraftCommand::Doctor {
+                calibration,
+                config,
+            } => craft_doctor(calibration.as_deref(), &config),
             CraftCommand::Calibrate {
                 target,
                 calibration,
+                config,
                 list,
                 timeout_secs,
             } => craft_calibrate(
                 target.as_deref(),
                 calibration.as_deref(),
+                &config,
                 list,
                 timeout_secs,
             ),
@@ -232,6 +246,7 @@ fn main() -> Result<()> {
                 log_dir,
                 no_currency_verify,
                 no_hold_currency,
+                config,
                 json,
             } => craft_run(CraftRunArgs {
                 cache: &cache,
@@ -246,6 +261,7 @@ fn main() -> Result<()> {
                 log_dir: &log_dir,
                 verify_currency: !no_currency_verify,
                 hold_currency: !no_hold_currency,
+                config: &config,
                 json,
             }),
         },
@@ -800,6 +816,7 @@ struct CraftRunArgs<'a> {
     log_dir: &'a Path,
     verify_currency: bool,
     hold_currency: bool,
+    config: &'a Path,
     json: bool,
 }
 
@@ -808,8 +825,14 @@ fn calibration_path(arg: Option<&Path>) -> PathBuf {
         .unwrap_or_else(Calibration::default_path)
 }
 
-fn craft_doctor(calibration_arg: Option<&Path>) -> Result<()> {
+fn craft_doctor(calibration_arg: Option<&Path>, config_path: &Path) -> Result<()> {
     let path = calibration_path(calibration_arg);
+    let config = AppConfig::load_or_default(config_path)
+        .with_context(|| format!("loading hotkey config {}", config_path.display()))?;
+    let hotkeys = config
+        .hotkeys
+        .parse()
+        .with_context(|| format!("validating hotkey config {}", config_path.display()))?;
     let mut game = Win32Game::find("Path of Exile").context("finding game window")?;
     let info = game.window_info()?;
     println!("Window: {}", info.title);
@@ -824,6 +847,11 @@ fn craft_doctor(calibration_arg: Option<&Path>) -> Result<()> {
         Ok(text) => println!("Clipboard: readable, {} chars", text.chars().count()),
         Err(error) => println!("Clipboard: {error}"),
     }
+    println!(
+        "Hotkeys: start {}, stop {}, calibrate {}, copy {}",
+        config.hotkeys.start, config.hotkeys.stop, config.hotkeys.calibrate, config.hotkeys.copy
+    );
+    game.apply_hotkeys(hotkeys);
     if path.exists() {
         let calibration = Calibration::load(&path)?;
         println!("Calibration: {}", path.display());
@@ -843,13 +871,14 @@ fn craft_doctor(calibration_arg: Option<&Path>) -> Result<()> {
     } else {
         println!("Calibration: missing (expected {})", path.display());
     }
-    println!("Emergency stop: F12");
+    println!("Emergency stop: {}", config.hotkeys.stop);
     Ok(())
 }
 
 fn craft_calibrate(
     target: Option<&str>,
     calibration_arg: Option<&Path>,
+    config_path: &Path,
     list: bool,
     timeout_secs: u64,
 ) -> Result<()> {
@@ -865,7 +894,7 @@ fn craft_calibrate(
         if target.is_none() && !list {
             println!();
             println!("Run with --target <item|panel|transmute|alt|aug|regal|alch|scour|chaos>.");
-            println!("Focus the game, hover the target slot, and press F8.");
+            println!("Focus the game, hover the target, and press the calibrate hotkey.");
         }
         return Ok(());
     }
@@ -878,7 +907,14 @@ fn craft_calibrate(
         );
     }
 
+    let config = AppConfig::load_or_default(config_path)
+        .with_context(|| format!("loading hotkey config {}", config_path.display()))?;
+    let hotkeys = config
+        .hotkeys
+        .parse()
+        .with_context(|| format!("validating hotkey config {}", config_path.display()))?;
     let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+    game.apply_hotkeys(hotkeys);
     let info = game.window_info()?;
     calibration.set_capture_size(info.client_width, info.client_height);
     let hint = if target == TARGET_PANEL {
@@ -887,8 +923,8 @@ fn craft_calibrate(
         "the target slot"
     };
     println!(
-        "Focus {}, hover {}, then press F8 within {}s.",
-        info.title, hint, timeout_secs
+        "Focus {}, hover {}, then press {} within {}s.",
+        info.title, hint, config.hotkeys.calibrate, timeout_secs
     );
     let point = game
         .capture_point(Duration::from_secs(timeout_secs))
@@ -964,8 +1000,15 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
         println!("Panel guard: off (optional; run `poe craft calibrate --target panel`)");
     }
 
+    let app_config = AppConfig::load_or_default(args.config)
+        .with_context(|| format!("loading hotkey config {}", args.config.display()))?;
+    let hotkeys = app_config
+        .hotkeys
+        .parse()
+        .with_context(|| format!("validating hotkey config {}", args.config.display()))?;
     let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
     game.set_action_delay(delays.action);
+    game.apply_hotkeys(hotkeys);
     let mut io = Win32GameIo::new(game, calibration);
 
     let max_steps = if args.once || args.dry_run {
@@ -997,7 +1040,8 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
 
     println!("Warning: this sends real mouse clicks to Path of Exile.");
     println!(
-        "Emergency stop: F12. Keep the stash/inventory open and the item in the calibrated slot."
+        "Emergency stop: {}. Keep the stash/inventory open and the item in the calibrated slot.",
+        app_config.hotkeys.stop
     );
     println!("Bringing Path of Exile to the foreground...");
     io.game

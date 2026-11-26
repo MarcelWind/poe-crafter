@@ -14,18 +14,18 @@ use winapi::um::winbase::QueryFullProcessImageNameW;
 use winapi::um::wingdi::{GetPixel, CLR_INVALID};
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 use winapi::um::winuser::{
-    AttachThreadInput, BringWindowToTop, ClientToScreen, EnumWindows, GetAsyncKeyState,
-    GetClientRect, GetCursorPos, GetDC, GetForegroundWindow, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, ReleaseDC, SendInput, SetCursorPos,
-    SetForegroundWindow, SetProcessDPIAware, ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE,
-    KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_SHIFT,
+    AttachThreadInput, BringWindowToTop, ClientToScreen, EnumWindows, GetClientRect, GetCursorPos,
+    GetDC, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible, ReleaseDC, SendInput, SetCursorPos, SetForegroundWindow, SetProcessDPIAware,
+    ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEINPUT, SW_RESTORE, VK_SHIFT,
 };
 
 use crate::calibration::{Color, NormPoint, PanelGuard};
+use crate::config::ParsedHotkeys;
 
 const WINDOW_TITLE_BUFFER: usize = 512;
-const VK_C_KEY: u32 = 0x43;
 const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(2_500);
 const MOVE_SETTLE: Duration = Duration::from_millis(20);
 const CLICK_SETTLE: Duration = Duration::from_millis(20);
@@ -120,6 +120,7 @@ pub struct Win32Game {
     title: String,
     action_delay: DelayProfile,
     rng: Rng,
+    hotkeys: ParsedHotkeys,
 }
 
 impl Drop for Win32Game {
@@ -158,11 +159,16 @@ impl Win32Game {
             title,
             action_delay: DelaySettings::default().action,
             rng: Rng::from_entropy(),
+            hotkeys: ParsedHotkeys::default(),
         })
     }
 
     pub fn set_action_delay(&mut self, profile: DelayProfile) {
         self.action_delay = profile;
+    }
+
+    pub fn apply_hotkeys(&mut self, hotkeys: ParsedHotkeys) {
+        self.hotkeys = hotkeys;
     }
 
     /// Delay before the next client mouse action.
@@ -198,7 +204,7 @@ impl Win32Game {
     }
 
     pub fn emergency_stop(&self) -> bool {
-        key_down(VK_F12)
+        self.hotkeys.stop.is_down()
     }
 
     /// Sample one client-area pixel from the composed desktop. Sampling the
@@ -278,7 +284,7 @@ impl Win32Game {
             if self.emergency_stop() {
                 return Err(InputError::Cancelled);
             }
-            if self.is_foreground() && key_down(VK_F8) {
+            if self.is_foreground() && self.hotkeys.calibrate.is_down() {
                 let point = cursor_pos()?;
                 let (width, height, origin_x, origin_y) = self.client_rect()?;
                 return NormPoint::from_screen(point.x, point.y, origin_x, origin_y, width, height)
@@ -303,10 +309,11 @@ impl Win32Game {
         self.move_to(point)?;
         self.require_foreground()?;
 
-        // Advanced Mod Descriptions is enabled, so Ctrl+C already includes the
-        // affix headers, tiers, and roll ranges.
+        // Advanced Mod Descriptions is enabled, so the configured copy shortcut
+        // already includes the affix headers, tiers, and roll ranges.
         self.clear_clipboard()?;
-        self.send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
+        let copy = self.hotkeys.copy.keys().to_vec();
+        self.send_key_combo(&copy)?;
         self.wait_for_clipboard(looks_like_equipment_text)
     }
 
@@ -322,7 +329,8 @@ impl Win32Game {
         self.move_to(point)?;
         self.require_foreground()?;
         self.clear_clipboard()?;
-        self.send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
+        let copy = self.hotkeys.copy.keys().to_vec();
+        self.send_key_combo(&copy)?;
         let deadline = Instant::now() + CLIPBOARD_TIMEOUT;
         while Instant::now() < deadline {
             if self.emergency_stop() {
@@ -507,10 +515,6 @@ fn set_cursor(x: i32, y: i32) -> Result<(), InputError> {
     Ok(())
 }
 
-fn key_down(vk: i32) -> bool {
-    (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
-}
-
 fn send_mouse(flags: DWORD) -> Result<(), InputError> {
     let mut input: INPUT = unsafe { zeroed() };
     input.type_ = INPUT_MOUSE;
@@ -543,13 +547,13 @@ fn send_key(vk: u32, up: bool) -> Result<(), InputError> {
 }
 
 impl Win32Game {
-    fn send_key_combo(&mut self, keys: &[u32]) -> Result<(), InputError> {
+    fn send_key_combo(&mut self, keys: &[i32]) -> Result<(), InputError> {
         for key in keys {
-            send_key(*key, false)?;
+            send_key(*key as u32, false)?;
             sleep(KEY_SETTLE);
         }
         for key in keys.iter().rev() {
-            send_key(*key, true)?;
+            send_key(*key as u32, true)?;
             sleep(KEY_SETTLE);
         }
         Ok(())

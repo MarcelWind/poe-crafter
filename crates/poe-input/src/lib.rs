@@ -1,4 +1,5 @@
 pub mod calibration;
+pub mod config;
 pub mod game_io;
 pub mod win32;
 
@@ -7,5 +8,6 @@ pub use calibration::{
     TARGET_AUG, TARGET_CHAOS, TARGET_ITEM, TARGET_PANEL, TARGET_REGAL, TARGET_SCOUR,
     TARGET_TRANSMUTE,
 };
+pub use config::{AppConfig, ConfigError, HotkeyConfig, ParsedHotkeys, Shortcut};
 pub use game_io::Win32GameIo;
 pub use win32::{InputError, Win32Game, WindowInfo};

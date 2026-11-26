@@ -47,11 +47,33 @@ The UI and CLI use `target/poe-data.msgpack`, `calibration.toml`, `delays.toml`,
 and `plans/*.toml` by default. Local calibration, delays, logs, and the data
 directory are git-ignored.
 
+## Hotkeys
+
+Copy `config.example.toml` to `config.toml` or use the UI Settings tab. Defaults:
+
+```toml
+[hotkeys]
+start = "F9"
+stop = "F12"
+calibrate = "F8"
+copy = "Ctrl+C"
+```
+
+- **Start** starts the current UI run. It is global while `poe-ui` is running,
+  so it works while Path of Exile is focused.
+- **Stop** cancels a CLI or UI session and releases held Shift.
+- **Calibrate** captures a point while Calibrate/`craft calibrate` is waiting.
+- **Copy** is sent to read the item and currency stacks.
+
+Shortcut names support letters, digits, `F1`-`F24`, modifiers (`Ctrl`, `Alt`,
+`Shift`, `Win`), and common keys such as `Space`, `Enter`, `Escape`, arrows, and
+navigation keys. `config.toml` is local and git-ignored.
+
 ## Calibration
 
 Enable Advanced Mod Descriptions in the game, keep the client in English, and
 use windowed or borderless mode. Capture each target by focusing Path of Exile,
-hovering the target slot, and pressing F8:
+hovering the target slot, and pressing the calibrate hotkey (F8 by default):
 
 ```
 poe craft calibrate --target item
@@ -81,7 +103,7 @@ poe craft run --plan plans/es-boots-alt.toml --max-steps 1000
 The default currency flow picks up the stack with a right-click, holds Shift,
 and left-clicks the item once per use. It verifies the item identity and text
 fingerprint after every use; currency counts are compared when the stack is
-released. F12 stops a run and releases Shift.
+released. The configured stop hotkey cancels the run and releases Shift.
 
 The action delay is one clamped Gaussian profile:
 

@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use eframe::egui;
 use poe_craft::{simulate, Plan, Simulator};
 use poe_data::load_cache;
-use poe_input::{Calibration, Win32Game, Win32GameIo, TARGET_PANEL};
+use poe_input::{AppConfig, Calibration, Shortcut, Win32Game, Win32GameIo, TARGET_PANEL};
 use poe_item::{parse_item, Resolver};
 use poe_session::{
     CraftSession, ProgressKind, SessionConfig, SessionLogger, SessionProgress, SessionReport,
@@ -41,6 +41,7 @@ enum Tab {
     Inspect,
     Plan,
     Run,
+    Settings,
 }
 
 enum WorkerMessage {
@@ -54,6 +55,7 @@ enum WorkerMessage {
     Preview(Result<String, String>),
     Progress(SessionProgress),
     Session(Box<Result<SessionReport, String>>),
+    StartRequested,
 }
 
 struct PoEApp {
@@ -63,6 +65,8 @@ struct PoEApp {
     delays_path: String,
     plan_path: String,
     log_dir: String,
+    config_path: String,
+    config: AppConfig,
     item_path: String,
     item_text: String,
     target: String,
@@ -77,6 +81,9 @@ struct PoEApp {
     running: bool,
     cancel: Option<Arc<AtomicBool>>,
     run_worker: Option<thread::JoinHandle<()>>,
+    start_cancel: Option<Arc<AtomicBool>>,
+    start_worker: Option<thread::JoinHandle<()>>,
+    ctx: egui::Context,
     sender: Sender<WorkerMessage>,
     receiver: Receiver<WorkerMessage>,
     max_steps: u32,
@@ -101,6 +108,8 @@ impl PoEApp {
             delays_path: "delays.toml".to_string(),
             plan_path: "plans/es-boots-alt.toml".to_string(),
             log_dir: "logs".to_string(),
+            config_path: "config.toml".to_string(),
+            config: AppConfig::default(),
             item_path: String::new(),
             item_text: String::new(),
             target: "item".to_string(),
@@ -115,6 +124,9 @@ impl PoEApp {
             running: false,
             cancel: None,
             run_worker: None,
+            start_cancel: None,
+            start_worker: None,
+            ctx: cc.egui_ctx.clone(),
             sender,
             receiver,
             max_steps: 10_000,
@@ -128,6 +140,8 @@ impl PoEApp {
             hold_currency: true,
         };
         app.reload_calibration();
+        app.reload_config();
+        app.restart_start_monitor();
         if !app.cache().exists() {
             app.start_data_setup();
         }
@@ -152,6 +166,69 @@ impl PoEApp {
 
     fn log_dir(&self) -> PathBuf {
         PathBuf::from(&self.log_dir)
+    }
+
+    fn config_path(&self) -> PathBuf {
+        PathBuf::from(&self.config_path)
+    }
+
+    fn reload_config(&mut self) {
+        let path = self.config_path();
+        match AppConfig::load_or_default(&path) {
+            Ok(config) => {
+                self.config = config;
+                self.status = format!("Loaded hotkey config {}", path.display());
+            }
+            Err(error) => {
+                self.status = format!("Hotkey config error: {error}");
+            }
+        }
+    }
+
+    fn save_config(&mut self) {
+        let path = self.config_path();
+        match self.config.save(&path) {
+            Ok(()) => {
+                self.status = format!("Saved hotkey config {}", path.display());
+                self.restart_start_monitor();
+            }
+            Err(error) => {
+                self.status = format!("Hotkey config error: {error}");
+            }
+        }
+    }
+
+    fn restart_start_monitor(&mut self) {
+        if let Some(cancel) = self.start_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(worker) = self.start_worker.take() {
+            let _ = worker.join();
+        }
+        let shortcut: Shortcut = match self.config.hotkeys.parse() {
+            Ok(hotkeys) => hotkeys.start,
+            Err(error) => {
+                self.status = format!("Start hotkey disabled: {error}");
+                return;
+            }
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let sender = self.sender.clone();
+        let ctx = self.ctx.clone();
+        self.start_cancel = Some(cancel);
+        self.start_worker = Some(thread::spawn(move || {
+            let mut was_down = false;
+            while !worker_cancel.load(Ordering::Relaxed) {
+                let down = shortcut.is_down();
+                if down && !was_down {
+                    let _ = sender.send(WorkerMessage::StartRequested);
+                    ctx.request_repaint();
+                }
+                was_down = down;
+                thread::sleep(Duration::from_millis(50));
+            }
+        }));
     }
 
     fn reload_calibration(&mut self) {
@@ -242,6 +319,14 @@ impl PoEApp {
                         self.events.remove(0);
                     }
                 }
+                WorkerMessage::StartRequested => {
+                    if self.running || self.busy {
+                        self.status =
+                            "Start hotkey ignored while another action is running.".to_string();
+                    } else {
+                        self.start_session();
+                    }
+                }
                 WorkerMessage::Session(result) => {
                     self.running = false;
                     self.busy = false;
@@ -274,8 +359,9 @@ impl PoEApp {
         let sender = self.sender.clone();
         let cache = self.cache();
         let calibration = self.calibration_path();
+        let config = self.config_path();
         thread::spawn(move || {
-            let result = doctor_report(&cache, &calibration);
+            let result = doctor_report(&cache, &calibration, &config);
             let _ = sender.send(WorkerMessage::Doctor(result));
         });
     }
@@ -313,12 +399,16 @@ impl PoEApp {
 
     fn start_calibration(&mut self) {
         self.busy = true;
-        self.status = format!("Capturing {}: focus the game and press F8", self.target);
+        self.status = format!(
+            "Capturing {}: focus the game and press {}",
+            self.target, self.config.hotkeys.calibrate
+        );
         let sender = self.sender.clone();
         let path = self.calibration_path();
+        let config_path = self.config_path();
         let target = self.target.clone();
         thread::spawn(move || {
-            let result = capture_calibration(&path, &target);
+            let result = capture_calibration(&path, &target, &config_path);
             let _ = sender.send(WorkerMessage::Calibrated(result));
         });
     }
@@ -381,6 +471,7 @@ impl PoEApp {
         let calibration = self.calibration_path();
         let delays = self.delays_path();
         let log_dir = self.log_dir();
+        let config = self.config_path();
         let dry_run = self.dry_run;
         let once = self.once;
         let max_steps = if once || dry_run {
@@ -414,7 +505,7 @@ impl PoEApp {
         self.status = if dry_run {
             "Dry run".to_string()
         } else {
-            "Real session running. F12 stops.".to_string()
+            format!("Real session running. {} stops.", self.config.hotkeys.stop)
         };
         let sender = self.sender.clone();
         let handle = thread::spawn(move || {
@@ -424,6 +515,7 @@ impl PoEApp {
                 calibration,
                 delays,
                 log_dir,
+                config,
                 dry_run,
                 max_steps,
                 max_seconds,
@@ -479,8 +571,9 @@ impl eframe::App for PoEApp {
                 ui.selectable_value(&mut self.tab, Tab::Inspect, "Inspect");
                 ui.selectable_value(&mut self.tab, Tab::Plan, "Plan");
                 ui.selectable_value(&mut self.tab, Tab::Run, "Run");
+                ui.selectable_value(&mut self.tab, Tab::Settings, "Settings");
                 ui.separator();
-                ui.small("Emergency stop: F12");
+                ui.small(format!("Emergency stop: {}", self.config.hotkeys.stop));
                 if let Some(calibration) = &self.calibration {
                     ui.separator();
                     ui.small(if calibration.panel.is_some() {
@@ -497,6 +590,7 @@ impl eframe::App for PoEApp {
             Tab::Inspect => self.inspect_tab(ui),
             Tab::Plan => self.plan_tab(ui),
             Tab::Run => self.run_tab(ui),
+            Tab::Settings => self.settings_tab(ui),
         });
 
         self.request_repaint(ctx);
@@ -540,6 +634,14 @@ impl PoEApp {
             ".",
         );
         ui.separator();
+        ui.label(format!(
+            "Hotkeys: start {} | stop {} | calibrate {} | copy {}",
+            self.config.hotkeys.start,
+            self.config.hotkeys.stop,
+            self.config.hotkeys.calibrate,
+            self.config.hotkeys.copy
+        ));
+        ui.separator();
         if let Some(calibration) = &self.calibration {
             ui.label(calibration_summary(calibration));
         } else {
@@ -551,10 +653,11 @@ impl PoEApp {
 
     fn calibrate_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Calibration");
-        ui.label(
-            "Focus Path of Exile, hover the requested slot, then press F8. \
+        ui.label(format!(
+            "Focus Path of Exile, hover the requested slot, then press {}. \
              A panel guard is an optional pixel probe on a stable part of the open stash/inventory.",
-        );
+            self.config.hotkeys.calibrate
+        ));
         path_row(
             ui,
             "Calibration",
@@ -653,12 +756,62 @@ impl PoEApp {
         output(ui, &self.plan_output);
     }
 
+    fn settings_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Settings");
+        ui.label("Global keyboard shortcuts. Use names such as F9, F12, Ctrl+C, or Shift+F8.");
+        path_row(
+            ui,
+            "Config file",
+            &mut self.config_path,
+            PathKind::File,
+            ".",
+        );
+        hotkey_row(ui, "Start", &mut self.config.hotkeys.start);
+        hotkey_row(ui, "Stop", &mut self.config.hotkeys.stop);
+        hotkey_row(ui, "Calibrate", &mut self.config.hotkeys.calibrate);
+        hotkey_row(ui, "Copy item/currency", &mut self.config.hotkeys.copy);
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                self.save_config();
+            }
+            if ui.button("Reload").clicked() {
+                self.reload_config();
+                self.restart_start_monitor();
+            }
+            if ui.button("Defaults").clicked() {
+                self.config.hotkeys = Default::default();
+                self.status = "Default hotkeys restored (not saved).".to_string();
+                self.restart_start_monitor();
+            }
+        });
+        ui.separator();
+        match self.config.hotkeys.parse() {
+            Ok(_) => {
+                ui.label(format!(
+                    "Start: {} | Stop: {} | Calibrate: {} | Copy: {}",
+                    self.config.hotkeys.start,
+                    self.config.hotkeys.stop,
+                    self.config.hotkeys.calibrate,
+                    self.config.hotkeys.copy
+                ));
+            }
+            Err(error) => {
+                ui.colored_label(egui::Color32::RED, error.to_string());
+            }
+        }
+        ui.label(
+            "Start works while the UI is in the background. Keep the game focused when using stop, \
+             calibrate, and copy keys so the game receives them.",
+        );
+    }
+
     fn run_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Craft");
-        ui.label(
+        ui.label(format!(
             "Dry run reads the item and recommends an action. A real run sends mouse clicks; \
-             keep the stash/inventory open and use F12 to stop.",
-        );
+             keep the stash/inventory open and use {} to stop.",
+            self.config.hotkeys.stop
+        ));
         path_row(
             ui,
             "Data cache",
@@ -751,6 +904,12 @@ impl Drop for PoEApp {
         if let Some(cancel) = &self.cancel {
             cancel.store(true, Ordering::Relaxed);
         }
+        if let Some(cancel) = &self.start_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(handle) = self.start_worker.take() {
+            let _ = handle.join();
+        }
         if let Some(handle) = self.run_worker.take() {
             let _ = handle.join();
         }
@@ -761,6 +920,21 @@ impl Drop for PoEApp {
 enum PathKind {
     File,
     Directory,
+}
+
+fn hotkey_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    egui::Grid::new(label)
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label(label);
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .desired_width(160.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            ui.end_row();
+        });
 }
 
 fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, kind: PathKind, default_dir: &str) {
@@ -889,7 +1063,7 @@ fn evaluation_summary(evaluation: Option<&poe_craft::GoalEvaluation>) -> String 
     }
 }
 
-fn doctor_report(cache: &Path, calibration: &Path) -> Result<String, String> {
+fn doctor_report(cache: &Path, calibration: &Path, config_path: &Path) -> Result<String, String> {
     let mut out = String::new();
     match Win32Game::find("Path of Exile") {
         Ok(game) => match game.window_info() {
@@ -936,17 +1110,36 @@ fn doctor_report(cache: &Path, calibration: &Path) -> Result<String, String> {
             calibration.display()
         ));
     }
-    out.push_str("Emergency stop: F12\n");
+    match AppConfig::load_or_default(config_path) {
+        Ok(config) => {
+            out.push_str(&format!(
+                "Hotkeys: start {}, stop {}, calibrate {}, copy {}\n",
+                config.hotkeys.start,
+                config.hotkeys.stop,
+                config.hotkeys.calibrate,
+                config.hotkeys.copy
+            ));
+            out.push_str(&format!("Emergency stop: {}\n", config.hotkeys.stop));
+        }
+        Err(error) => out.push_str(&format!("Hotkey config: {error}\n")),
+    }
     Ok(out)
 }
 
-fn capture_calibration(path: &Path, target: &str) -> Result<Calibration, String> {
+fn capture_calibration(
+    path: &Path,
+    target: &str,
+    config_path: &Path,
+) -> Result<Calibration, String> {
     let mut calibration = if path.exists() {
         Calibration::load(path).map_err(|error| error.to_string())?
     } else {
         Calibration::empty()
     };
+    let config = AppConfig::load_or_default(config_path).map_err(|error| error.to_string())?;
+    let hotkeys = config.hotkeys.parse().map_err(|error| error.to_string())?;
     let mut game = Win32Game::find(&calibration.game_title).map_err(|error| error.to_string())?;
+    game.apply_hotkeys(hotkeys);
     let info = game.window_info().map_err(|error| error.to_string())?;
     calibration.set_capture_size(info.client_width, info.client_height);
     game.focus().map_err(|error| error.to_string())?;
@@ -1074,6 +1267,7 @@ struct SessionRequest {
     calibration: PathBuf,
     delays: PathBuf,
     log_dir: PathBuf,
+    config: PathBuf,
     dry_run: bool,
     max_steps: u32,
     max_seconds: u64,
@@ -1121,8 +1315,11 @@ fn run_session_inner(request: &SessionRequest) -> Result<SessionResult, String> 
     }
     let delays =
         DelaySettings::load_or_default(&request.delays).map_err(|error| error.to_string())?;
+    let config = AppConfig::load_or_default(&request.config).map_err(|error| error.to_string())?;
+    let hotkeys = config.hotkeys.parse().map_err(|error| error.to_string())?;
     let mut game = Win32Game::find(&calibration.game_title).map_err(|error| error.to_string())?;
     game.set_action_delay(delays.action);
+    game.apply_hotkeys(hotkeys);
     let mut io = Win32GameIo::new(game, calibration);
     io.game.focus().map_err(|error| error.to_string())?;
 

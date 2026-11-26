@@ -24,10 +24,15 @@ Status: initial implementation. The UI compiles and exercises the same
 - **Inspect** - load or paste item text and resolve affixes.
 - **Plan** - validate a plan and run a bounded simulation.
 - **Run** - dry run or real run, budgets, live events, final report, and Stop.
+- **Settings** - start/stop/calibrate/copy hotkeys, saved to `config.toml`.
 
 The real run executes on a worker thread. Progress and completion flow back to
 the UI through a channel; Stop sets the session's cancel flag. The game is
 focused automatically before the session starts.
+
+A global start-hotkey monitor runs while the UI is open, so the start key works
+with Path of Exile focused. Stop, calibrate, and copy shortcuts are applied to
+the shared input layer used by the CLI and UI.
 
 ## Panel guard
 
@@ -53,8 +58,8 @@ conservative runs.
   warning.
 
 `CraftSession::set_cancel_flag` accepts an `Arc<AtomicBool>`. The gate checks it
-together with F12, foreground state, and preflight. The UI's Stop button sets
-the same flag.
+together with the configured stop hotkey, foreground state, and preflight. The
+UI's Stop button sets the same flag.
 
 ## Data setup
 
