@@ -3,3 +3,6 @@ start = "F9"
 stop = "F12"
 calibrate = "F8"
 copy = "Ctrl+C"
+
+[update]
+check_on_startup = true

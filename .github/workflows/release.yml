@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag matches Cargo version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME.TrimStart('v')
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($meta.packages | Where-Object { $_.name -eq 'poe-ui' } | Select-Object -First 1).version
+          if ($version -ne $tag) {
+            throw "Tag v$tag does not match Cargo version $version. Bump the workspace version first."
+          }
+
+      - name: Build release binaries
+        run: cargo build --release -p poe-ui -p poe-cli
+
+      - name: Package portable app
+        shell: pwsh
+        run: |
+          $stage = "dist/poe-crafter"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/poe-ui.exe $stage
+          Copy-Item target/release/poe.exe $stage
+          Copy-Item config.example.toml $stage
+          Copy-Item README.md $stage
+          Copy-Item plans $stage -Recurse
+          New-Item -ItemType Directory -Force -Path "$stage/data" | Out-Null
+          Copy-Item data/pob-lock.json "$stage/data/pob-lock.json"
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/poe-crafter-windows-x64.zip" -Force
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/poe-crafter-windows-x64.zip
+          generate_release_notes: true

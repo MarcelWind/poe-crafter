@@ -16,6 +16,9 @@ Status: initial implementation. The UI compiles and exercises the same
   cancellation.
 - Missing data caches are downloaded and built automatically by the CLI and UI;
   files are verified against `data/pob-lock.json` before importing.
+- The UI checks the latest GitHub release on startup and on demand, stages a
+  binary-only update, and restarts through the new binary in helper mode.
+  Config, plans, calibration, logs, and data stay in place.
 
 ## UI tabs
 
@@ -57,9 +60,27 @@ conservative runs.
 - `Applied` after each verified currency action, with the evaluation and any
   warning.
 
+The UI also checks updates in the background, so a newer release can replace the
+two executables and restart without touching user data.
+
+
 `CraftSession::set_cancel_flag` accepts an `Arc<AtomicBool>`. The gate checks it
 together with the configured stop hotkey, foreground state, and preflight. The
 UI's Stop button sets the same flag.
+
+## Updates
+
+`poe-update` reads GitHub's latest release, compares its `vX.Y.Z` tag with the
+running package version, downloads `poe-crafter-windows-x64.zip`, and extracts
+only `poe-ui.exe` and `poe.exe` into a temporary staging directory. The new
+binary is launched with `--apply-update`, waits for the old process, replaces
+the two binaries, and starts the UI from the install directory. User config,
+plans, calibration, logs, and data are not touched.
+
+Settings has the startup-check toggle, current version, and a manual check
+button. Doctor also has a manual check button. Debug builds report available
+releases but do not install them unless `POE_CRAFTER_ALLOW_DEBUG_UPDATE=1` is
+set. See `docs/releasing.md` for the release workflow.
 
 ## Data setup
 

@@ -19,8 +19,16 @@ use poe_timing::DelaySettings;
 
 const DATA_LOCK: &str = "data/pob-lock.json";
 const DATA_DIR: &str = "data/pob";
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn updates_installable() -> bool {
+    !cfg!(debug_assertions) || std::env::var_os("POE_CRAFTER_ALLOW_DEBUG_UPDATE").is_some()
+}
 
 fn main() -> eframe::Result {
+    if let Some(code) = poe_update::apply_from_args(std::env::args_os()) {
+        std::process::exit(code);
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1080.0, 720.0])
@@ -56,6 +64,9 @@ enum WorkerMessage {
     Progress(SessionProgress),
     Session(Box<Result<SessionReport, String>>),
     StartRequested,
+    UpdateStatus(String),
+    UpdateProgress(poe_update::UpdateProgress),
+    UpdateFinished(Result<String, String>),
 }
 
 struct PoEApp {
@@ -79,6 +90,8 @@ struct PoEApp {
     status: String,
     busy: bool,
     running: bool,
+    update_busy: bool,
+    update_output: String,
     cancel: Option<Arc<AtomicBool>>,
     run_worker: Option<thread::JoinHandle<()>>,
     start_cancel: Option<Arc<AtomicBool>>,
@@ -122,6 +135,8 @@ impl PoEApp {
             status: "Ready".to_string(),
             busy: false,
             running: false,
+            update_busy: false,
+            update_output: String::new(),
             cancel: None,
             run_worker: None,
             start_cancel: None,
@@ -142,7 +157,9 @@ impl PoEApp {
         app.reload_calibration();
         app.reload_config();
         app.restart_start_monitor();
-        if !app.cache().exists() {
+        if app.config.update.check_on_startup {
+            app.start_update_check();
+        } else if !app.cache().exists() {
             app.start_data_setup();
         }
         app
@@ -246,7 +263,7 @@ impl PoEApp {
     }
 
     fn request_repaint(&self, ctx: &egui::Context) {
-        if self.running || self.busy {
+        if self.running || self.busy || self.update_busy {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -320,11 +337,46 @@ impl PoEApp {
                     }
                 }
                 WorkerMessage::StartRequested => {
-                    if self.running || self.busy {
+                    if self.running || self.busy || self.update_busy {
                         self.status =
                             "Start hotkey ignored while another action is running.".to_string();
                     } else {
                         self.start_session();
+                    }
+                }
+                WorkerMessage::UpdateStatus(message) => {
+                    self.status = message.clone();
+                    self.update_output = message;
+                }
+                WorkerMessage::UpdateProgress(progress) => {
+                    let percent = progress.total.map(|total| {
+                        if total == 0 {
+                            100.0
+                        } else {
+                            progress.downloaded as f64 / total as f64 * 100.0
+                        }
+                    });
+                    let message = match percent {
+                        Some(percent) => format!("Downloading update... {percent:.0}%"),
+                        None => format!("Downloading update... {} KiB", progress.downloaded / 1024),
+                    };
+                    self.status = message.clone();
+                    self.update_output = message;
+                }
+                WorkerMessage::UpdateFinished(result) => {
+                    self.update_busy = false;
+                    match result {
+                        Ok(message) => {
+                            self.status = message.clone();
+                            self.update_output = message;
+                        }
+                        Err(error) => {
+                            self.status = format!("Update check failed: {error}");
+                            self.update_output = format!("Update check failed: {error}");
+                        }
+                    }
+                    if !self.cache().exists() && !self.busy {
+                        self.start_data_setup();
                     }
                 }
                 WorkerMessage::Session(result) => {
@@ -351,6 +403,79 @@ impl PoEApp {
         if let Some(handle) = self.run_worker.take() {
             let _ = handle.join();
         }
+    }
+
+    fn start_update_check(&mut self) {
+        if self.update_busy || self.running || self.busy {
+            return;
+        }
+        self.update_busy = true;
+        self.status = format!("Checking for updates (current {CURRENT_VERSION})...");
+        self.update_output = self.status.clone();
+        let sender = self.sender.clone();
+        thread::spawn(move || {
+            let release = match poe_update::check_for_update(CURRENT_VERSION) {
+                Ok(release) => release,
+                Err(error) => {
+                    let _ = sender.send(WorkerMessage::UpdateFinished(Err(error.to_string())));
+                    return;
+                }
+            };
+            let Some(release) = release else {
+                let _ = sender.send(WorkerMessage::UpdateFinished(Ok(format!(
+                    "Version {CURRENT_VERSION} is up to date."
+                ))));
+                return;
+            };
+            if !updates_installable() {
+                let _ = sender.send(WorkerMessage::UpdateFinished(Ok(format!(
+                    "Version {} is available. Debug builds do not auto-install updates.",
+                    release.version
+                ))));
+                return;
+            }
+            let _ = sender.send(WorkerMessage::UpdateStatus(format!(
+                "Update {} available; downloading...",
+                release.version
+            )));
+            let staging = poe_update::staging_dir(&release.version);
+            let progress_sender = sender.clone();
+            let mut progress = |progress: poe_update::UpdateProgress| {
+                let _ = progress_sender.send(WorkerMessage::UpdateProgress(progress));
+            };
+            let staged =
+                match poe_update::download_and_stage(&release, &staging, Some(&mut progress)) {
+                    Ok(staged) => staged,
+                    Err(error) => {
+                        let _ = sender.send(WorkerMessage::UpdateFinished(Err(error.to_string())));
+                        return;
+                    }
+                };
+            let target = match std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(Path::to_path_buf))
+            {
+                Some(target) => target,
+                None => {
+                    let _ = sender.send(WorkerMessage::UpdateFinished(Err(
+                        "cannot locate the current executable directory".to_string(),
+                    )));
+                    return;
+                }
+            };
+            let _ = sender.send(WorkerMessage::UpdateStatus(
+                "Update downloaded; restarting...".to_string(),
+            ));
+            thread::sleep(Duration::from_millis(300));
+            let working_dir = std::env::current_dir().ok();
+            if let Err(error) =
+                poe_update::apply_and_restart(&staged, &target, working_dir.as_deref())
+            {
+                let _ = sender.send(WorkerMessage::UpdateFinished(Err(error.to_string())));
+                return;
+            }
+            std::process::exit(0);
+        });
     }
 
     fn start_doctor(&mut self) {
@@ -463,7 +588,10 @@ impl PoEApp {
     }
 
     fn start_session(&mut self) {
-        if self.running {
+        if self.running || self.update_busy {
+            if self.update_busy {
+                self.status = "Wait for the update check to finish.".to_string();
+            }
             return;
         }
         let cache = self.cache();
@@ -555,7 +683,7 @@ impl eframe::App for PoEApp {
                 ui.heading("PoE Crafter");
                 ui.separator();
                 ui.label(&self.status);
-                if self.running || self.busy {
+                if self.running || self.busy || self.update_busy {
                     ui.spinner();
                 }
             });
@@ -607,12 +735,21 @@ impl PoEApp {
             }
             if ui
                 .add_enabled(
-                    !self.busy && !self.cache().exists(),
+                    !self.busy && !self.update_busy && !self.cache().exists(),
                     egui::Button::new("Download data"),
                 )
                 .clicked()
             {
                 self.start_data_setup();
+            }
+            if ui
+                .add_enabled(
+                    !self.update_busy && !self.busy && !self.running,
+                    egui::Button::new("Check for updates"),
+                )
+                .clicked()
+            {
+                self.start_update_check();
             }
             if ui.button("Reload calibration").clicked() {
                 self.reload_calibration();
@@ -674,7 +811,10 @@ impl PoEApp {
                     }
                 });
             if ui
-                .add_enabled(!self.busy, egui::Button::new("Capture"))
+                .add_enabled(
+                    !self.busy && !self.update_busy,
+                    egui::Button::new("Capture"),
+                )
                 .clicked()
             {
                 self.start_calibration();
@@ -803,6 +943,25 @@ impl PoEApp {
             "Start works while the UI is in the background. Keep the game focused when using stop, \
              calibrate, and copy keys so the game receives them.",
         );
+        ui.separator();
+        ui.label(format!("Application version: {CURRENT_VERSION}"));
+        ui.checkbox(
+            &mut self.config.update.check_on_startup,
+            "Check for updates on startup",
+        );
+        if ui
+            .add_enabled(
+                !self.update_busy && !self.busy && !self.running,
+                egui::Button::new("Check for updates"),
+            )
+            .clicked()
+        {
+            self.start_update_check();
+        }
+        if !self.update_output.is_empty() {
+            ui.separator();
+            output(ui, &self.update_output);
+        }
     }
 
     fn run_tab(&mut self, ui: &mut egui::Ui) {
@@ -859,7 +1018,7 @@ impl PoEApp {
         ui.horizontal(|ui| {
             let label = if self.dry_run { "Preview" } else { "Start run" };
             if ui
-                .add_enabled(!self.running, egui::Button::new(label))
+                .add_enabled(!self.running && !self.update_busy, egui::Button::new(label))
                 .clicked()
             {
                 self.start_session();

@@ -188,11 +188,32 @@ impl Default for ParsedHotkeys {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateConfig {
+    #[serde(default = "default_true")]
+    pub check_on_startup: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check_on_startup: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
     pub hotkeys: HotkeyConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 impl AppConfig {
@@ -274,6 +295,7 @@ mod tests {
         assert_eq!(decoded.hotkeys.stop, "F12");
         assert_eq!(decoded.hotkeys.calibrate, "F8");
         assert_eq!(decoded.hotkeys.copy, "Ctrl+C");
+        assert!(decoded.update.check_on_startup);
     }
 
     #[test]
@@ -283,6 +305,7 @@ mod tests {
                 stop: "nope".to_string(),
                 ..HotkeyConfig::default()
             },
+            ..AppConfig::default()
         };
         assert!(config.hotkeys.parse().is_err());
     }

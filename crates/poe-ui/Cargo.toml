@@ -17,3 +17,4 @@ poe-input = { path = "../poe-input" }
 poe-item = { path = "../poe-item" }
 poe-session = { path = "../poe-session" }
 poe-timing = { path = "../poe-timing" }
+poe-update = { path = "../poe-update" }

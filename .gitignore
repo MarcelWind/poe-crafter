@@ -11,6 +11,7 @@
 /delays.toml
 /logs/
 *.jsonl
+/update-error.log
 
 # Python tooling
 __pycache__/

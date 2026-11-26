@@ -69,6 +69,28 @@ Shortcut names support letters, digits, `F1`-`F24`, modifiers (`Ctrl`, `Alt`,
 `Shift`, `Win`), and common keys such as `Space`, `Enter`, `Escape`, arrows, and
 navigation keys. `config.toml` is local and git-ignored.
 
+The same file controls the startup update check:
+
+```toml
+[update]
+check_on_startup = true
+```
+
+## Auto-updates
+
+`poe-ui` checks the latest stable GitHub release on startup. A newer release is
+downloaded and staged, then a helper waits for the old UI to exit, replaces only
+`poe-ui.exe` and `poe.exe`, and restarts the app. `config.toml`, calibration,
+delays, plans, logs, and the data cache are preserved. Use **Settings > Check
+for updates** or the Doctor button to check manually; disable the startup check
+in Settings with `update.check_on_startup = false`.
+
+Debug builds check but do not install updates. Set
+`POE_CRAFTER_ALLOW_DEBUG_UPDATE=1` only when testing the updater from a debug
+build. The first release with the updater must be installed manually.
+
+Release publishing is documented in `docs/releasing.md`.
+
 ## Calibration
 
 Enable Advanced Mod Descriptions in the game, keep the client in English, and
@@ -123,6 +145,7 @@ max_ms = 70
 - `poe-session` - platform-independent verified session state machine.
 - `poe-input` - Windows window, clipboard, input, and calibration layer.
 - `poe-timing` - shared RNG and Gaussian delay profiles.
+- `poe-update` - GitHub release checks and the Windows self-updater.
 - `poe-cli` - `poe` command-line interface.
 - `poe-ui` - `poe-ui` desktop shell.
 
