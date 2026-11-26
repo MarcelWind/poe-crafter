@@ -2513,6 +2513,7 @@ name = "poe-input"
 version = "0.1.0"
 dependencies = [
  "clipboard-win",
+ "image",
  "poe-session",
  "poe-timing",
  "serde",

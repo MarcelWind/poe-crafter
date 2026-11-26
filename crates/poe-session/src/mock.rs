@@ -15,6 +15,8 @@ pub struct MockGame {
     pub lose_foreground_after: Option<usize>,
     pub emergency_after: Option<usize>,
     pub applied: Vec<Currency>,
+    pub prepared: Vec<Currency>,
+    pub prepared_while_held: Vec<Currency>,
     held_currency: Option<Currency>,
 }
 
@@ -35,6 +37,8 @@ impl MockGame {
             lose_foreground_after: None,
             emergency_after: None,
             applied: Vec::new(),
+            prepared: Vec::new(),
+            prepared_while_held: Vec::new(),
             held_currency: None,
         }
     }
@@ -56,6 +60,14 @@ impl GameIo for MockGame {
 
     fn emergency_stop(&mut self) -> bool {
         self.emergency
+    }
+
+    fn prepare_source(&mut self, currency: Currency) -> Result<(), IoError> {
+        self.prepared.push(currency);
+        if self.held_currency.is_some() {
+            self.prepared_while_held.push(currency);
+        }
+        Ok(())
     }
 
     fn read_item(&mut self) -> Result<String, IoError> {

@@ -37,8 +37,16 @@ pub trait GameIo {
     fn is_foreground(&mut self) -> Result<bool, IoError>;
     fn emergency_stop(&mut self) -> bool;
 
-    /// Optional safety checks that must pass before any client action.
+    /// Optional safety checks that must pass before any client action. This is
+    /// passive: implementations must not click or switch stash tabs here.
     fn preflight(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
+
+    /// Make sure the currency source is reachable before reading or picking it
+    /// up. Implementations may switch stash tabs here, but only when nothing is
+    /// held on the cursor.
+    fn prepare_source(&mut self, _currency: Currency) -> Result<(), IoError> {
         Ok(())
     }
 

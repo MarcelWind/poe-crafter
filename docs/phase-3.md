@@ -40,10 +40,14 @@ When the held currency is released:
   reflow; if the item never changed and the stack did not decrease, the run
   aborts.
 
-For the most reliable count verification, keep the calibrated currency stacks
-in the player inventory rather than a currency tab. Currency tabs can merge or
-move stacks while returning the remaining stack, making the count at the
-calibrated point ambiguous.
+For the most reliable count verification, keep currency stacks in the player
+inventory. Currency tabs can merge or move stacks while returning the remaining
+stack, making the count at the calibrated point ambiguous. Tab-based sources are
+supported; the hovered stack's display name is verified before clicking.
+
+If a plan uses a tab source, the item must stay visible: keep it in the player
+inventory unless every tab source used by the plan resolves to the item's own
+tab (no tab switch). The session rejects an item anchor inside a different tab.
 
 Budgets:
 
@@ -75,19 +79,29 @@ poe craft calibrate --target chaos
 For slot targets, focus Path of Exile, hover the target slot, and press the
 configured calibrate key (F8 by default). For `panel`, hover a stable pixel on
 the open panel instead. Progress is saved immediately.
-`poe craft calibrate --list` shows captured points.
+`poe craft calibrate --list` shows captured points and configured tabs.
+`poe craft calibrate --check` focuses the game and reports the live image-guard
+score and selected tab without clicking.
 
-`panel` is an optional guard: hover a stable pixel on the open stash or
-inventory panel. The tool samples its color and checks it before each client
-action. If the panel closes or changes, the run aborts before the next click.
-The guard is off when uncalibrated; calibrate it for safer real runs.
+The preferred guard is an image template configured in the UI Calibrate tab
+(see `docs/phase-4.md`). It matches a stable stash/inventory chrome region with
+translation and scale tolerance before each client action. The legacy `panel`
+probe is still accepted as a single-pixel fallback. A mismatch aborts before the
+next click; runs without any guard are allowed with a warning.
+
+Stash-tab sources are configured in `calibration.toml` schema 2. Use the UI
+screenshot editor for strip/content rectangles, tab templates, and item
+`(tab, column, row)` mappings. The CLI keeps point capture for legacy targets.
 
 Coordinates are normalized to the game client area, so moving the window does
 not invalidate them. Use windowed or borderless mode; exclusive fullscreen is
 not supported.
 
-Place all currency stacks in the inventory. The target item can be in the stash
-or inventory, but the stash/inventory must stay open during the run.
+Currency can live in the player inventory or in a configured stash tab. The
+target item may be in the player inventory, or in the currently selected stash
+tab when no tab switch is required. The stash/inventory must stay open during
+the run. Tab sources must be mapped to a `(tab, column, row)` grid cell in the
+UI Calibrate tab.
 
 Enable Advanced Mod Descriptions in the game options. Item and currency reads
 both use the configured copy shortcut (`Ctrl+C` by default); with Advanced Mod
@@ -116,8 +130,8 @@ invalid config aborts before any click.
 ```
 poe craft doctor
 poe craft calibrate --list
-poe craft run --plan plans\es-boots-alt.toml --dry-run
-poe craft run --plan plans\es-boots-alt.toml --once
+poe craft run --plan plans\es-boots-alt.toml --dry-run --item-at-cursor
+poe craft run --plan plans\es-boots-alt.toml --once --item-at-cursor
 poe craft run --plan plans\es-boots-alt.toml --max-steps 1000
 poe-ui
 ```
@@ -137,10 +151,12 @@ Useful flags:
 - `--delays delays.toml` selects a Gaussian delay profile; built-in defaults
   are used when the file is absent.
 - `--max-seconds` and `--max-cost` bound a run.
-- `--no-currency-verify` disables stack-count checks; item text is still
-  verified, but this is less safe.
+- `--no-currency-verify` disables stack-count checks; item text, tab-source
+  names, and empty tab slots are still verified, but this is less safe.
 - `--no-hold-currency` re-picks the currency for every use instead of holding
   Shift.
+- `--item-at-cursor` focuses the game and captures the hovered item with the
+  calibrate hotkey; without it a legacy calibrated `item` point is used.
 - `--json` prints the final session report as JSON.
 
 ## Currency interaction
@@ -196,9 +212,13 @@ presses, and clipboard polling; they are not part of the between-action delay.
 
 ## Known limits
 
-- Panel detection is a single optional calibrated color probe, not full OCR or
-  template matching. It catches a closed panel but not every UI overlay. Keep
-  the stash open and use conservative `--once`/dry-run checks.
+- Panel detection is template matching, not OCR. It tolerates small shifts,
+  blur, and scale drift, but a resolution/UI-scale change or game patch can
+  invalidate templates; recalibrate when the doctor reports a size mismatch.
+- Tab navigation is template-guided with bounded scroll retries. The vertical
+  strip's hide/show button is not automated; keep at least one strip visible.
+- `--item-at-cursor` captures the hovered item with the calibrate hotkey. The
+  fixed `item` point remains as a fallback for scripted runs.
 - There is no cursor-item guard. If a click is missed while a stack is held,
   the stop hotkey or a session abort releases Shift; inspect the cursor before
   retrying.

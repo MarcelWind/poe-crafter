@@ -7,9 +7,16 @@ Status: initial implementation. The UI compiles and exercises the same
 
 - New `poe-ui` crate using `eframe/egui`, launched with `poe-ui`.
 - New `Win32GameIo` adapter shared by the CLI and UI.
-- Optional `panel` calibration guard: a sampled client-area pixel must match
-  before a currency pickup or item click.
-- `GameIo::preflight` runs before every session gate.
+- Optional template-based panel guard: a grayscale, translation/scale-tolerant
+  NCC match must pass before a currency pickup or item click. The legacy
+  single-pixel `panel` probe still works as a fallback.
+- Configured stash tabs with horizontal/vertical strip ROIs, per-tab
+  selected/unselected templates, and grid-addressed item sources.
+- Dynamic item anchor: the UI captures the hovered item from the start hotkey;
+  the CLI uses `--item-at-cursor` with the calibrate hotkey.
+- `GameIo::preflight` runs before every session gate and is click-free.
+  `GameIo::prepare_source` performs bounded tab navigation only before a
+  currency is picked up.
 - `CraftSession` now exposes live `SessionProgress` events and an external
   cancel flag.
 - The session releases held Shift on normal completion, errors, and
@@ -22,8 +29,10 @@ Status: initial implementation. The UI compiles and exercises the same
 
 ## UI tabs
 
-- **Doctor** - game window, data cache, calibration, and window status.
-- **Calibrate** - item, currency, and optional panel guards.
+- **Doctor** - game window, data cache, guard/template status, tabs, and window status.
+- **Calibrate** - legacy item/currency points plus a screenshot ROI editor for
+  the image guard, tab strips, tab content grids, tab templates, and item
+  source mapping.
 - **Inspect** - load or paste item text and resolve affixes.
 - **Plan** - validate a plan and run a bounded simulation.
 - **Run** - dry run or real run, budgets, live events, final report, and Stop.
@@ -37,20 +46,53 @@ A global start-hotkey monitor runs while the UI is open, so the start key works
 with Path of Exile focused. Stop, calibrate, and copy shortcuts are applied to
 the shared input layer used by the CLI and UI.
 
-## Panel guard
+## Vision guard and stash tabs
 
-Calibrate `panel` on a stable pixel of the open stash or inventory, not on the
-item or a currency slot. The tool samples that pixel from the composed desktop
-at client coordinates and compares it with the captured color within a
-tolerance.
+The preferred guard is an image template of stable stash or inventory chrome.
+Capture the client from the Calibrate tab, drag a rectangle over chrome that
+does not change with tab or slot contents, and apply it as the panel guard.
+Before every action the tool captures that region from the composed desktop,
+converts both sides to grayscale, blurs, and runs a normalized cross-correlation
+search over a small translation window and a few scales. A mismatch aborts
+before the next click and saves the live crop plus score under `logs/`.
 
-The guard is optional so existing calibrations keep working. When it is absent
-the UI shows a warning and the session falls back to item/clipboard checks. When
-present, a mismatch aborts with a preflight error before the next click.
+The legacy single-pixel `panel` probe remains supported for old calibrations
+and is used only when no image guard is configured. Real runs without either
+guard still work after a warning; dry runs remain permissive.
 
-This is a single-pixel probe, not OCR or template matching. It detects a closed
-panel but not every overlay or UI state. Keep the stash open and use
-conservative runs.
+Stash tabs are configured in `calibration.toml` schema 2:
+
+- horizontal and/or vertical tab-strip ROI;
+- per-tab index, kind/name, content grid (columns/rows), and selected and
+  unselected header templates;
+- item sources as either an inventory point or `(tab, column, row)`.
+
+Template paths are relative and must stay inside the calibration directory;
+absolute, UNC, and `..` paths are rejected. Saving also refuses a guarded or
+tabbed calibration when a referenced template file is missing, so capture the
+selected template before expecting the saved config to run.
+
+`prepare_source` identifies the selected tab from the selected templates,
+finds the target tab with its unselected/selected template, clicks the match
+center, verifies the selected template, and scrolls the identified strip with
+bounded retries if needed. It is only called before picking up or applying
+currency, never while a stack is held. The hide/show button for the vertical
+strip is not automated.
+
+Before clicking a tab or currency slot, `read_currency` copies the hovered
+stack and verifies its display name against the configured name. This catches
+wrong-tab and wrong-cell layouts even if template matching drifts.
+
+## Item anchor
+
+The fixed item slot is optional. The UI start hotkey captures the cursor
+position while the item is hovered and uses it as the item anchor for that run.
+The CLI uses `--item-at-cursor` and asks for the calibrate hotkey after focusing
+the game; without it, a legacy calibrated `item` point is used.
+
+Tab switching changes what the stash shows. An item inside a stash tab is only
+accepted when every tab source used by the plan resolves to that same tab
+(no switch is required); otherwise place the item in the player inventory.
 
 ## Session events
 
@@ -92,7 +134,7 @@ command that needs item or plan data.
 
 ## Remaining work
 
-- Full panel/template detection and cursor-item detection.
+- Cursor-item detection and OCR for arbitrary slot text.
 - More crafting actions beyond the Phase 2 currency set.
 - A general plan/step DSL instead of fixed strategy methods.
 - Batch crafting: multiple slots, stash scanning, and item queues.

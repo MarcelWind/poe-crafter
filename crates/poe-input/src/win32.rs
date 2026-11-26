@@ -6,12 +6,16 @@ use std::time::{Duration, Instant};
 use clipboard_win::{get_clipboard_string, set_clipboard_string};
 use poe_timing::{DelayProfile, DelaySettings, Rng};
 use thiserror::Error;
+use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE};
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::processthreadsapi::{GetCurrentThreadId, OpenProcess};
 use winapi::um::winbase::QueryFullProcessImageNameW;
-use winapi::um::wingdi::{GetPixel, CLR_INVALID};
+use winapi::um::wingdi::{
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetPixel, SelectObject,
+    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLR_INVALID, DIB_RGB_COLORS, SRCCOPY,
+};
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 use winapi::um::winuser::{
     AttachThreadInput, BringWindowToTop, ClientToScreen, EnumWindows, GetClientRect, GetCursorPos,
@@ -19,11 +23,12 @@ use winapi::um::winuser::{
     IsWindowVisible, ReleaseDC, SendInput, SetCursorPos, SetForegroundWindow, SetProcessDPIAware,
     ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEINPUT, SW_RESTORE, VK_SHIFT,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, SW_RESTORE, VK_SHIFT,
 };
 
-use crate::calibration::{Color, NormPoint, PanelGuard};
+use crate::calibration::{Color, NormPoint, NormRect, PanelGuard};
 use crate::config::ParsedHotkeys;
+use crate::vision::CapturedImage;
 
 const WINDOW_TITLE_BUFFER: usize = 512;
 const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(2_500);
@@ -54,6 +59,8 @@ pub enum InputError {
     Timeout(String),
     #[error("panel guard failed: expected {expected:?}, sampled {actual:?}")]
     PanelGuard { expected: Color, actual: Color },
+    #[error("vision error: {0}")]
+    Vision(String),
     #[error("cancelled")]
     Cancelled,
 }
@@ -66,6 +73,13 @@ pub struct WindowInfo {
     pub origin_x: i32,
     pub origin_y: i32,
     pub foreground: bool,
+}
+
+/// Parsed currency clipboard output: display name and stack size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackRead {
+    pub display_name: String,
+    pub count: u32,
 }
 
 struct WindowSearch {
@@ -229,6 +243,39 @@ impl Win32Game {
         Ok(Color::from_bgr(value))
     }
 
+    /// Capture the whole game client area as BGRA.
+    pub fn capture_client(&self) -> Result<CapturedImage, InputError> {
+        let (width, height, origin_x, origin_y) = self.client_rect()?;
+        capture_screen_region(origin_x, origin_y, width, height)
+    }
+
+    /// Capture a normalized rectangle of the game client area as BGRA.
+    pub fn capture_rect(&self, rect: NormRect) -> Result<CapturedImage, InputError> {
+        let (width, height, origin_x, origin_y) = self.client_rect()?;
+        let (x, y, w, h) = rect.to_pixels(origin_x, origin_y, width, height);
+        capture_screen_region(x, y, w, h)
+    }
+
+    /// Move, click once, and settle. Used for tab-strip selection.
+    pub fn click_point(&mut self, point: NormPoint, left: bool) -> Result<(), InputError> {
+        self.require_foreground()?;
+        self.move_to(point)?;
+        sleep(CLICK_SETTLE);
+        self.mouse_click(left)?;
+        sleep(POST_CLICK_SETTLE);
+        Ok(())
+    }
+
+    /// Move over a point and send one wheel step. Positive `delta` scrolls up.
+    pub fn scroll_point(&mut self, point: NormPoint, delta: i32) -> Result<(), InputError> {
+        self.require_foreground()?;
+        self.move_to(point)?;
+        sleep(MOVE_SETTLE);
+        self.mouse_wheel(delta)?;
+        sleep(POST_CLICK_SETTLE);
+        Ok(())
+    }
+
     pub fn verify_panel(&self, guard: PanelGuard) -> Result<(), InputError> {
         let actual = self.sample_color(guard.point)?;
         if guard.matches(actual) {
@@ -317,7 +364,7 @@ impl Win32Game {
         self.wait_for_clipboard(looks_like_equipment_text)
     }
 
-    pub fn read_currency(&mut self, point: NormPoint) -> Result<u32, InputError> {
+    pub fn read_currency(&mut self, point: NormPoint) -> Result<StackRead, InputError> {
         self.require_foreground()?;
         let original = cursor_pos()?;
         let result = self.read_currency_at(point);
@@ -325,7 +372,7 @@ impl Win32Game {
         result
     }
 
-    fn read_currency_at(&mut self, point: NormPoint) -> Result<u32, InputError> {
+    fn read_currency_at(&mut self, point: NormPoint) -> Result<StackRead, InputError> {
         self.move_to(point)?;
         self.require_foreground()?;
         self.clear_clipboard()?;
@@ -341,8 +388,8 @@ impl Win32Game {
             }
             match get_clipboard_string() {
                 Ok(text) if !text.trim().is_empty() => {
-                    if let Some(count) = parse_stack_size(&text) {
-                        return Ok(count);
+                    if let Some(read) = parse_stack_text(&text) {
+                        return Ok(read);
                     }
                     return Err(InputError::Input(
                         "clipboard text is not a currency stack".to_string(),
@@ -353,7 +400,10 @@ impl Win32Game {
         }
         // An empty currency slot produces no clipboard text. Treat it as zero so
         // the session aborts before attempting a click.
-        Ok(0)
+        Ok(StackRead {
+            display_name: String::new(),
+            count: 0,
+        })
     }
 
     pub fn begin_hold(&mut self, currency_point: NormPoint) -> Result<(), InputError> {
@@ -482,6 +532,23 @@ impl Win32Game {
         send_mouse(up)
     }
 
+    fn mouse_wheel(&mut self, delta: i32) -> Result<(), InputError> {
+        self.require_foreground()?;
+        let mut input: INPUT = unsafe { zeroed() };
+        input.type_ = INPUT_MOUSE;
+        unsafe {
+            *input.u.mi_mut() = MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: delta as DWORD,
+                dwFlags: MOUSEEVENTF_WHEEL,
+                time: 0,
+                dwExtraInfo: 0,
+            };
+        }
+        send_input(&input)
+    }
+
     fn client_rect(&self) -> Result<(i32, i32, i32, i32), InputError> {
         let mut rect: RECT = unsafe { zeroed() };
         if unsafe { GetClientRect(self.hwnd, &mut rect) } == 0 {
@@ -498,6 +565,88 @@ impl Win32Game {
         }
         Ok((width, height, origin.x, origin.y))
     }
+}
+
+/// Copy a screen rectangle into a top-down 32-bit BGRA buffer.
+fn capture_screen_region(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<CapturedImage, InputError> {
+    if width <= 0 || height <= 0 {
+        return Err(InputError::EmptyClientArea);
+    }
+    let screen = null_mut();
+    let screen_dc = unsafe { GetDC(screen) };
+    if screen_dc.is_null() {
+        return Err(InputError::Input("GetDC failed".to_string()));
+    }
+    let memory_dc = unsafe { CreateCompatibleDC(screen_dc) };
+    if memory_dc.is_null() {
+        unsafe {
+            ReleaseDC(screen, screen_dc);
+        }
+        return Err(InputError::Input("CreateCompatibleDC failed".to_string()));
+    }
+
+    let mut bitmap_info: BITMAPINFO = unsafe { zeroed() };
+    bitmap_info.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as DWORD;
+    bitmap_info.bmiHeader.biWidth = width;
+    bitmap_info.bmiHeader.biHeight = -height;
+    bitmap_info.bmiHeader.biPlanes = 1;
+    bitmap_info.bmiHeader.biBitCount = 32;
+    bitmap_info.bmiHeader.biCompression = BI_RGB;
+
+    let mut bits: *mut c_void = null_mut();
+    let bitmap = unsafe {
+        CreateDIBSection(
+            memory_dc,
+            &bitmap_info,
+            DIB_RGB_COLORS,
+            &mut bits,
+            null_mut(),
+            0,
+        )
+    };
+    if bitmap.is_null() || bits.is_null() {
+        unsafe {
+            DeleteDC(memory_dc);
+            ReleaseDC(screen, screen_dc);
+        }
+        return Err(InputError::Input("CreateDIBSection failed".to_string()));
+    }
+
+    let previous = unsafe { SelectObject(memory_dc, bitmap as *mut c_void) };
+    let copied = unsafe { BitBlt(memory_dc, 0, 0, width, height, screen_dc, x, y, SRCCOPY) };
+    unsafe {
+        SelectObject(memory_dc, previous);
+    }
+
+    let result = if copied == 0 {
+        Err(InputError::Input("BitBlt failed".to_string()))
+    } else {
+        let length = width as usize * height as usize * 4;
+        let data = unsafe { std::slice::from_raw_parts(bits as *const u8, length) };
+        Ok(CapturedImage::new(
+            width as u32,
+            height as u32,
+            data.to_vec(),
+        ))
+    };
+
+    unsafe {
+        DeleteObject(bitmap as *mut c_void);
+        DeleteDC(memory_dc);
+        ReleaseDC(screen, screen_dc);
+    }
+    result
+}
+
+/// Global cursor position in screen coordinates.
+pub fn global_cursor_position() -> Result<(i32, i32), InputError> {
+    let point = cursor_pos()?;
+    Ok((point.x, point.y))
 }
 
 fn cursor_pos() -> Result<POINT, InputError> {
@@ -591,4 +740,44 @@ fn parse_stack_size(text: &str) -> Option<u32> {
         .take_while(|character| character.is_ascii_digit())
         .collect::<String>();
     digits.parse().ok()
+}
+
+fn parse_stack_text(text: &str) -> Option<StackRead> {
+    let count = parse_stack_size(text)?;
+    let display_name = text
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with("--------"))
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("Item Class:")
+                && !trimmed.starts_with("Rarity:")
+        })?
+        .trim()
+        .to_string();
+    Some(StackRead {
+        display_name,
+        count,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_currency_clipboard_text() {
+        let text = "Item Class: Stackable Currency\nRarity: Currency\nVaal Orb\n--------\nStack Size: 367/20\n--------\nCorrupts an item\n";
+        let read = parse_stack_text(text).unwrap();
+        assert_eq!(read.display_name, "Vaal Orb");
+        assert_eq!(read.count, 367);
+    }
+
+    #[test]
+    fn missing_stack_size_is_none() {
+        assert!(
+            parse_stack_text("Item Class: Stackable Currency\nRarity: Currency\nChaos Orb\n")
+                .is_none()
+        );
+    }
 }

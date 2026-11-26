@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 clipboard-win = "5.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
 poe-session = { path = "../poe-session" }
 poe-timing = { path = "../poe-timing" }
 serde.workspace = true

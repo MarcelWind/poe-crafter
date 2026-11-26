@@ -11,7 +11,7 @@ use poe_craft::{
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
 use poe_input::{AppConfig, Calibration, Color, Win32Game, Win32GameIo, TARGET_PANEL};
 use poe_item::{parse_item, ResolvedItem, Resolver};
-use poe_session::{CraftSession, SessionConfig, SessionLogger};
+use poe_session::{plan_currencies, CraftSession, Currency, SessionConfig, SessionLogger};
 use poe_timing::DelaySettings;
 
 #[derive(Debug, Parser)]
@@ -81,6 +81,9 @@ enum CraftCommand {
         /// Print current calibration instead of capturing.
         #[arg(long)]
         list: bool,
+        /// Capture the live guard and selected tab without clicking.
+        #[arg(long)]
+        check: bool,
         /// Seconds to wait for the game and calibrate key.
         #[arg(long, default_value_t = 15)]
         timeout_secs: u64,
@@ -110,12 +113,17 @@ enum CraftCommand {
         max_cost: Option<f64>,
         #[arg(long, default_value = "logs")]
         log_dir: PathBuf,
-        /// Disable currency count verification (item text is still checked).
+        /// Disable currency count verification. Tab source names and empty tab
+        /// slots are still checked before pickup.
         #[arg(long)]
         no_currency_verify: bool,
         /// Re-pick the currency for every use instead of holding Shift.
         #[arg(long)]
         no_hold_currency: bool,
+        /// Use the hovered item at the cursor as the item anchor. Focus the
+        /// game, hover the item, then press the calibrate hotkey.
+        #[arg(long)]
+        item_at_cursor: bool,
         /// Hotkey config TOML; defaults are used if the file is absent.
         #[arg(long, default_value = "config.toml")]
         config: PathBuf,
@@ -226,12 +234,14 @@ fn main() -> Result<()> {
                 calibration,
                 config,
                 list,
+                check,
                 timeout_secs,
             } => craft_calibrate(
                 target.as_deref(),
                 calibration.as_deref(),
                 &config,
                 list,
+                check,
                 timeout_secs,
             ),
             CraftCommand::Run {
@@ -247,6 +257,7 @@ fn main() -> Result<()> {
                 log_dir,
                 no_currency_verify,
                 no_hold_currency,
+                item_at_cursor,
                 config,
                 json,
             } => craft_run(CraftRunArgs {
@@ -262,6 +273,7 @@ fn main() -> Result<()> {
                 log_dir: &log_dir,
                 verify_currency: !no_currency_verify,
                 hold_currency: !no_hold_currency,
+                item_at_cursor,
                 config: &config,
                 json,
             }),
@@ -1030,6 +1042,7 @@ struct CraftRunArgs<'a> {
     log_dir: &'a Path,
     verify_currency: bool,
     hold_currency: bool,
+    item_at_cursor: bool,
     config: &'a Path,
     json: bool,
 }
@@ -1075,12 +1088,87 @@ fn craft_doctor(calibration_arg: Option<&Path>, config_path: &Path) -> Result<()
         } else {
             println!("Missing targets: {}", missing.join(", "));
         }
-        match calibration.panel {
-            Some(panel) => println!(
-                "Panel guard: {:?} at ({:.4}, {:.4}) +/- {}",
-                panel.color, panel.point.x, panel.point.y, panel.tolerance
+        match &calibration.guard {
+            Some(guard) => println!(
+                "Image guard: {} ({:.4},{:.4} {:.4}x{:.4}) threshold {:.2}",
+                guard.reference.display(),
+                guard.region.x,
+                guard.region.y,
+                guard.region.w,
+                guard.region.h,
+                guard.threshold
             ),
-            None => println!("Panel guard: not calibrated (optional)"),
+            None => match calibration.panel {
+                Some(panel) => println!(
+                    "Panel guard: legacy pixel {:?} at ({:.4}, {:.4}) +/- {}",
+                    panel.color, panel.point.x, panel.point.y, panel.tolerance
+                ),
+                None => println!("Panel guard: not calibrated (optional)"),
+            },
+        }
+        println!(
+            "Strips: horizontal {}, vertical {}",
+            if calibration.strips.horizontal.is_some() {
+                "on"
+            } else {
+                "off"
+            },
+            if calibration.strips.vertical.is_some() {
+                "on"
+            } else {
+                "off"
+            }
+        );
+        if let Some(guard) = &calibration.guard {
+            let resolved = poe_input::resolve_relative(&path, &guard.reference);
+            if !resolved.exists() {
+                println!("Warning: guard template is missing: {}", resolved.display());
+            }
+        }
+        for tab in &calibration.tabs {
+            println!(
+                "Tab {}: {} {}x{} grid at ({:.3},{:.3})",
+                tab.index,
+                if tab.name.is_empty() {
+                    &tab.kind
+                } else {
+                    &tab.name
+                },
+                tab.content.columns,
+                tab.content.rows,
+                tab.content.region.x,
+                tab.content.region.y
+            );
+            for template in [Some(&tab.selected), tab.unselected.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                let resolved = poe_input::resolve_relative(&path, template);
+                if !resolved.exists() {
+                    println!("  Warning: missing tab template {}", resolved.display());
+                }
+            }
+        }
+        if !calibration.items.is_empty() {
+            println!(
+                "Items: {}",
+                calibration
+                    .items
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if let (Some(width), Some(height)) =
+            (calibration.captured_width, calibration.captured_height)
+        {
+            if width != info.client_width || height != info.client_height {
+                println!(
+                    "Warning: templates were calibrated at {width}x{height}; current client is {}x{}.",
+                    info.client_width, info.client_height
+                );
+            }
         }
     } else {
         println!("Calibration: missing (expected {})", path.display());
@@ -1094,6 +1182,7 @@ fn craft_calibrate(
     calibration_arg: Option<&Path>,
     config_path: &Path,
     list: bool,
+    check: bool,
     timeout_secs: u64,
 ) -> Result<()> {
     let path = calibration_path(calibration_arg);
@@ -1102,6 +1191,20 @@ fn craft_calibrate(
     } else {
         Calibration::empty()
     };
+
+    if check {
+        let game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+        game.focus()
+            .context("bringing Path of Exile to the foreground")?;
+        std::thread::sleep(Duration::from_millis(200));
+        let mut io = Win32GameIo::new(game, calibration, Some(path.clone()))
+            .map_err(|error| anyhow::anyhow!("loading vision templates: {error}"))?;
+        print!(
+            "{}",
+            io.test_vision().map_err(|error| anyhow::anyhow!(error))?
+        );
+        return Ok(());
+    }
 
     if list || target.is_none() {
         print_calibration(&calibration, &path);
@@ -1177,12 +1280,58 @@ fn print_calibration(calibration: &Calibration, path: &Path) {
             None => println!("  {target:<10} missing"),
         }
     }
-    match calibration.panel {
-        Some(panel) => println!(
-            "  {:<10} ({:.4}, {:.4}) {:?} +/- {}",
-            TARGET_PANEL, panel.point.x, panel.point.y, panel.color, panel.tolerance
+    match &calibration.guard {
+        Some(guard) => println!(
+            "  {:<10} image {} threshold {:.2}",
+            "guard",
+            guard.reference.display(),
+            guard.threshold
         ),
-        None => println!("  {:<10} missing (optional)", TARGET_PANEL),
+        None => match calibration.panel {
+            Some(panel) => println!(
+                "  {:<10} legacy pixel ({:.4}, {:.4}) {:?} +/- {}",
+                TARGET_PANEL, panel.point.x, panel.point.y, panel.color, panel.tolerance
+            ),
+            None => println!("  {:<10} missing (optional)", TARGET_PANEL),
+        },
+    }
+    println!(
+        "  strips    horizontal {}, vertical {}",
+        if calibration.strips.horizontal.is_some() {
+            "on"
+        } else {
+            "off"
+        },
+        if calibration.strips.vertical.is_some() {
+            "on"
+        } else {
+            "off"
+        }
+    );
+    for tab in &calibration.tabs {
+        println!(
+            "  tab {:<3} {} {}x{} grid",
+            tab.index,
+            if tab.name.is_empty() {
+                &tab.kind
+            } else {
+                &tab.name
+            },
+            tab.content.columns,
+            tab.content.rows
+        );
+    }
+    for (key, item) in &calibration.items {
+        match &item.source {
+            poe_input::ItemSource::Inventory { x, y } => println!(
+                "  item {key:<10} {}, inventory ({x:.4}, {y:.4})",
+                item.display_name
+            ),
+            poe_input::ItemSource::Tab { tab, column, row } => println!(
+                "  item {key:<10} {}, tab {tab} cell ({column}, {row})",
+                item.display_name
+            ),
+        }
     }
 }
 
@@ -1192,14 +1341,16 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     let path = calibration_path(args.calibration);
     let calibration = Calibration::load(&path)
         .with_context(|| format!("loading calibration {}", path.display()))?;
-    if calibration.item.is_none() {
-        anyhow::bail!("calibration item slot is missing; run `poe craft calibrate --target item`.");
-    }
+    let used_currencies = plan_currencies(&plan).unwrap_or_else(|| Currency::ALL.to_vec());
     if !args.dry_run {
-        let missing = calibration.missing(Calibration::all_targets());
+        let required = used_currencies
+            .iter()
+            .map(|currency| currency.key())
+            .collect::<Vec<_>>();
+        let missing = calibration.missing(&required);
         if !missing.is_empty() {
             anyhow::bail!(
-                "calibration is incomplete; missing: {}. Run `poe craft calibrate --target ...`.",
+                "calibration is incomplete; missing sources: {}. Configure inventory points or tab items in the UI, or run `poe craft calibrate --target ...`.",
                 missing.join(", ")
             );
         }
@@ -1208,10 +1359,35 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     let delays = DelaySettings::load_or_default(args.delays)
         .with_context(|| format!("loading delay profile {}", args.delays.display()))?;
     print_delays(&delays, args.delays);
-    if calibration.panel.is_some() {
-        println!("Panel guard: on");
+    if let Some(guard) = &calibration.guard {
+        println!(
+            "Image guard: on ({} threshold {:.2})",
+            guard.reference.display(),
+            guard.threshold
+        );
+    } else if calibration.panel.is_some() {
+        println!("Panel guard: legacy pixel probe");
     } else {
-        println!("Panel guard: off (optional; run `poe craft calibrate --target panel`)");
+        println!("Panel guard: off (optional)");
+    }
+    if !calibration.tabs.is_empty() {
+        let names = calibration
+            .tabs
+            .iter()
+            .map(|tab| {
+                format!(
+                    "{}:{}",
+                    tab.index,
+                    if tab.name.is_empty() {
+                        &tab.kind
+                    } else {
+                        &tab.name
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Stash tabs: {names}");
     }
 
     let app_config = AppConfig::load_or_default(args.config)
@@ -1223,7 +1399,30 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
     game.set_action_delay(delays.action);
     game.apply_hotkeys(hotkeys);
-    let mut io = Win32GameIo::new(game, calibration);
+    let mut anchor = calibration.item;
+    if args.item_at_cursor {
+        game.focus()
+            .context("bringing Path of Exile to the foreground")?;
+        println!(
+            "Hover the item, then press {} within 30s to capture the item anchor.",
+            app_config.hotkeys.calibrate
+        );
+        let point = game
+            .capture_point(Duration::from_secs(30))
+            .context("capturing the hovered item")?;
+        anchor = Some(point);
+    }
+    let Some(anchor) = anchor else {
+        anyhow::bail!(
+            "no item anchor; pass --item-at-cursor and hover the item, or run `poe craft calibrate --target item`."
+        );
+    };
+    let mut io = Win32GameIo::new(game, calibration, Some(path.clone()))
+        .map_err(|error| anyhow::anyhow!("loading vision templates: {error}"))?;
+    io.set_diagnostics_dir(args.log_dir.to_path_buf());
+    io.set_item_anchor(anchor);
+    io.validate_item_anchor(&used_currencies)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
 
     let max_steps = if args.once || args.dry_run {
         1
@@ -1254,7 +1453,7 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
 
     println!("Warning: this sends real mouse clicks to Path of Exile.");
     println!(
-        "Emergency stop: {}. Keep the stash/inventory open and the item in the calibrated slot.",
+        "Emergency stop: {}. Keep the stash/inventory open and the item under the captured anchor.",
         app_config.hotkeys.stop
     );
     println!("Bringing Path of Exile to the foreground...");

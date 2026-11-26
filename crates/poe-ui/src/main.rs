@@ -14,10 +14,15 @@ use poe_craft::{
     PlanFile, PlanStep, Pool, Requirement, Simulator, Slot, StartRarity, StepAction, StepEstimate,
 };
 use poe_data::{load_cache, PobData};
-use poe_input::{AppConfig, Calibration, Shortcut, Win32Game, Win32GameIo, TARGET_PANEL};
+use poe_input::{
+    global_cursor_position, AppConfig, Calibration, CapturedImage, GridConfig, ImageGuard,
+    ItemConfig, ItemSource, NormPoint, NormRect, Shortcut, TabConfig, Win32Game, Win32GameIo,
+    TARGET_PANEL,
+};
 use poe_item::{parse_item, Resolver};
 use poe_session::{
-    CraftSession, ProgressKind, SessionConfig, SessionLogger, SessionProgress, SessionReport,
+    plan_currencies, CraftSession, Currency, ProgressKind, SessionConfig, SessionLogger,
+    SessionProgress, SessionReport,
 };
 use poe_timing::DelaySettings;
 
@@ -69,10 +74,56 @@ enum WorkerMessage {
     Preview(Result<String, String>),
     Progress(SessionProgress),
     Session(Box<Result<SessionReport, String>>),
-    StartRequested,
+    StartRequested { point: Option<(i32, i32)> },
+    Screenshot(Result<CapturedImage, String>),
+    VisionTest(Result<String, String>),
     UpdateStatus(String),
     UpdateProgress(poe_update::UpdateProgress),
     UpdateFinished(Result<String, String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum VisionTarget {
+    #[default]
+    None,
+    Guard,
+    HorizontalStrip,
+    VerticalStrip,
+    TabContent,
+    TabSelected,
+    TabUnselected,
+}
+
+struct VisionState {
+    image: Option<CapturedImage>,
+    texture: Option<egui::TextureHandle>,
+    drag_start: Option<egui::Pos2>,
+    selection: Option<NormRect>,
+    target: VisionTarget,
+    tab_index: u32,
+    tab_kind: String,
+    tab_name: String,
+    columns: u32,
+    rows: u32,
+    message: String,
+}
+
+impl Default for VisionState {
+    fn default() -> Self {
+        Self {
+            image: None,
+            texture: None,
+            drag_start: None,
+            selection: None,
+            target: VisionTarget::None,
+            tab_index: 0,
+            tab_kind: "currency".to_string(),
+            tab_name: "Currency".to_string(),
+            columns: 12,
+            rows: 12,
+            message: String::new(),
+        }
+    }
 }
 
 struct PoEApp {
@@ -115,6 +166,8 @@ struct PoEApp {
     verify_currency: bool,
     hold_currency: bool,
     builder: Option<BuilderState>,
+    pending_item_anchor: Option<(i32, i32)>,
+    vision: VisionState,
 }
 
 impl PoEApp {
@@ -161,6 +214,8 @@ impl PoEApp {
             verify_currency: true,
             hold_currency: true,
             builder: None,
+            pending_item_anchor: None,
+            vision: VisionState::default(),
         };
         app.reload_calibration();
         app.reload_config();
@@ -247,7 +302,8 @@ impl PoEApp {
             while !worker_cancel.load(Ordering::Relaxed) {
                 let down = shortcut.is_down();
                 if down && !was_down {
-                    let _ = sender.send(WorkerMessage::StartRequested);
+                    let point = global_cursor_position().ok();
+                    let _ = sender.send(WorkerMessage::StartRequested { point });
                     ctx.request_repaint();
                 }
                 was_down = down;
@@ -350,12 +406,50 @@ impl PoEApp {
                         self.events.remove(0);
                     }
                 }
-                WorkerMessage::StartRequested => {
+                WorkerMessage::StartRequested { point } => {
                     if self.running || self.busy || self.update_busy {
                         self.status =
                             "Start hotkey ignored while another action is running.".to_string();
                     } else {
+                        self.pending_item_anchor = point;
                         self.start_session();
+                    }
+                }
+                WorkerMessage::VisionTest(result) => {
+                    self.busy = false;
+                    match result {
+                        Ok(report) => {
+                            self.vision.message = report.clone();
+                            self.status = "Vision test complete.".to_string();
+                        }
+                        Err(error) => {
+                            self.vision.message = error.clone();
+                            self.status = error;
+                        }
+                    }
+                }
+                WorkerMessage::Screenshot(result) => {
+                    self.busy = false;
+                    match result {
+                        Ok(image) => {
+                            let color = egui::ColorImage::from_rgba_unmultiplied(
+                                [image.width as usize, image.height as usize],
+                                &image.to_rgba(),
+                            );
+                            self.vision.texture = Some(self.ctx.load_texture(
+                                "calibration-screenshot",
+                                color,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                            self.vision.image = Some(image);
+                            self.vision.message =
+                                "Screenshot captured. Drag a rectangle, then apply it.".to_string();
+                            self.status = "Screenshot captured.".to_string();
+                        }
+                        Err(error) => {
+                            self.vision.message = error.clone();
+                            self.status = error;
+                        }
                     }
                 }
                 WorkerMessage::UpdateStatus(message) => {
@@ -552,6 +646,441 @@ impl PoEApp {
         });
     }
 
+    fn start_screenshot(&mut self) {
+        self.busy = true;
+        self.vision.message = "Capturing client screenshot...".to_string();
+        let sender = self.sender.clone();
+        let title = self
+            .calibration
+            .as_ref()
+            .map(|calibration| calibration.game_title.clone())
+            .unwrap_or_else(|| "Path of Exile".to_string());
+        thread::spawn(move || {
+            let result = (|| -> Result<CapturedImage, String> {
+                let game = Win32Game::find(&title).map_err(|error| error.to_string())?;
+                game.focus().map_err(|error| error.to_string())?;
+                thread::sleep(Duration::from_millis(200));
+                game.capture_client().map_err(|error| error.to_string())
+            })();
+            let _ = sender.send(WorkerMessage::Screenshot(result));
+        });
+    }
+
+    fn start_vision_test(&mut self) {
+        self.busy = true;
+        self.vision.message = "Testing the live guard and tab detection...".to_string();
+        let sender = self.sender.clone();
+        let path = self.calibration_path();
+        thread::spawn(move || {
+            let result = (|| -> Result<String, String> {
+                let calibration = Calibration::load(&path).map_err(|error| error.to_string())?;
+                let game =
+                    Win32Game::find(&calibration.game_title).map_err(|error| error.to_string())?;
+                game.focus().map_err(|error| error.to_string())?;
+                thread::sleep(Duration::from_millis(200));
+                let mut io = Win32GameIo::new(game, calibration, Some(path.clone()))
+                    .map_err(|error| error.to_string())?;
+                io.test_vision()
+            })();
+            let _ = sender.send(WorkerMessage::VisionTest(result));
+        });
+    }
+
+    fn apply_vision_selection(&mut self) {
+        let Some(rect) = self.vision.selection else {
+            self.vision.message = "Drag a rectangle on the screenshot first.".to_string();
+            return;
+        };
+        let target = self.vision.target;
+        let tab_index = self.vision.tab_index;
+        let tab_kind = self.vision.tab_kind.clone();
+        let tab_name = self.vision.tab_name.clone();
+        let columns = self.vision.columns.max(1);
+        let rows = self.vision.rows.max(1);
+        let image = self.vision.image.clone();
+        let base = self.calibration_path();
+        let mut calibration = self.calibration.take().unwrap_or_else(Calibration::empty);
+        if let Some(image) = &image {
+            calibration.set_capture_size(image.width as i32, image.height as i32);
+        }
+        let result = (|| -> Result<String, String> {
+            match target {
+                VisionTarget::None => Err("Choose what the selection should become.".to_string()),
+                VisionTarget::Guard => {
+                    let image = image
+                        .as_ref()
+                        .ok_or_else(|| "Capture a screenshot first.".to_string())?;
+                    let reference = save_crop(image, &base, rect, "guard.png")?;
+                    calibration
+                        .set_guard(ImageGuard::new(rect, reference))
+                        .map_err(|error| error.to_string())?;
+                    Ok("guard template".to_string())
+                }
+                VisionTarget::HorizontalStrip => {
+                    calibration
+                        .set_strip("horizontal", rect)
+                        .map_err(|error| error.to_string())?;
+                    Ok("horizontal tab strip".to_string())
+                }
+                VisionTarget::VerticalStrip => {
+                    calibration
+                        .set_strip("vertical", rect)
+                        .map_err(|error| error.to_string())?;
+                    Ok("vertical tab strip".to_string())
+                }
+                VisionTarget::TabContent => {
+                    let existing = calibration.tab(tab_index).cloned();
+                    let selected = existing
+                        .as_ref()
+                        .map(|tab| tab.selected.clone())
+                        .unwrap_or_else(|| {
+                            PathBuf::from(format!(
+                                "calibration-templates/tab{tab_index}-selected.png"
+                            ))
+                        });
+                    let unselected = existing.and_then(|tab| tab.unselected);
+                    calibration
+                        .upsert_tab(TabConfig {
+                            index: tab_index,
+                            kind: tab_kind,
+                            name: tab_name,
+                            selected,
+                            unselected,
+                            content: GridConfig {
+                                region: rect,
+                                columns,
+                                rows,
+                            },
+                        })
+                        .map_err(|error| error.to_string())?;
+                    Ok(format!(
+                        "tab {tab_index} content grid (capture the header templates next)"
+                    ))
+                }
+                VisionTarget::TabSelected => {
+                    let image = image
+                        .as_ref()
+                        .ok_or_else(|| "Capture a screenshot first.".to_string())?;
+                    let mut tab = calibration
+                        .tab(tab_index)
+                        .cloned()
+                        .ok_or_else(|| "Apply the tab content rectangle first.".to_string())?;
+                    tab.selected =
+                        save_crop(image, &base, rect, &format!("tab{tab_index}-selected.png"))?;
+                    calibration
+                        .upsert_tab(tab)
+                        .map_err(|error| error.to_string())?;
+                    Ok(format!("tab {tab_index} selected template"))
+                }
+                VisionTarget::TabUnselected => {
+                    let image = image
+                        .as_ref()
+                        .ok_or_else(|| "Capture a screenshot first.".to_string())?;
+                    let mut tab = calibration
+                        .tab(tab_index)
+                        .cloned()
+                        .ok_or_else(|| "Apply the tab content rectangle first.".to_string())?;
+                    tab.unselected = Some(save_crop(
+                        image,
+                        &base,
+                        rect,
+                        &format!("tab{tab_index}-unselected.png"),
+                    )?);
+                    calibration
+                        .upsert_tab(tab)
+                        .map_err(|error| error.to_string())?;
+                    Ok(format!("tab {tab_index} unselected template"))
+                }
+            }
+        })();
+
+        match result {
+            Ok(what) => match calibration.save(&base) {
+                Ok(()) => {
+                    self.calibration = Some(calibration);
+                    self.vision.message = format!("Saved {what} to {}", base.display());
+                    self.status = self.vision.message.clone();
+                }
+                Err(error) => {
+                    self.calibration = Some(calibration);
+                    self.vision.message = format!("Cannot save calibration: {error}");
+                }
+            },
+            Err(error) => {
+                self.calibration = Some(calibration);
+                self.vision.message = error;
+            }
+        }
+    }
+
+    fn vision_editor(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Vision guard and stash tabs");
+        ui.label(
+            "Capture brings Path of Exile to the foreground for a clean screenshot. \
+             Open the stash on the tab you want, capture the client, then drag rectangles. \
+             For a tab: draw its content grid and apply 'Tab content grid'; then draw the \
+             tab header and apply 'Tab selected template'. Switch to a different tab, capture \
+             again, and apply the same header rectangle as 'Tab unselected template'. Tab \
+             templates should include the icon or label, not just the blank tab shape.",
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !self.busy && !self.update_busy,
+                    egui::Button::new("Capture screenshot"),
+                )
+                .clicked()
+            {
+                self.start_screenshot();
+            }
+            if ui
+                .add_enabled(
+                    !self.busy && !self.update_busy,
+                    egui::Button::new("Test guard/tabs"),
+                )
+                .clicked()
+            {
+                self.start_vision_test();
+            }
+            if ui.button("Reload calibration").clicked() {
+                self.reload_calibration();
+            }
+        });
+        if !self.vision.message.is_empty() {
+            ui.label(&self.vision.message);
+        }
+
+        let texture = self.vision.texture.clone();
+        let image_size = self
+            .vision
+            .image
+            .as_ref()
+            .map(|image| (image.width as f32, image.height as f32));
+        if let (Some(texture), Some((image_width, image_height))) = (texture, image_size) {
+            let mut width = ui.available_width().clamp(240.0, 900.0);
+            let mut height = width * image_height / image_width.max(1.0);
+            if height > 520.0 {
+                height = 520.0;
+                width = height * image_width / image_height.max(1.0);
+            }
+            let (response, painter) =
+                ui.allocate_painter(egui::vec2(width, height), egui::Sense::click_and_drag());
+            let frame = response.rect;
+            painter.image(
+                texture.id(),
+                frame,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            if response.drag_started() {
+                self.vision.drag_start = response.interact_pointer_pos();
+            }
+            if response.dragged() {
+                if let (Some(start), Some(current)) =
+                    (self.vision.drag_start, response.interact_pointer_pos())
+                {
+                    self.vision.selection = drag_rect(frame, start, current);
+                }
+            }
+            if response.drag_stopped() {
+                self.vision.drag_start = None;
+            }
+            if let Some(selection) = self.vision.selection {
+                let min = egui::pos2(
+                    frame.left() + selection.x * frame.width(),
+                    frame.top() + selection.y * frame.height(),
+                );
+                let max = egui::pos2(
+                    min.x + selection.w * frame.width(),
+                    min.y + selection.h * frame.height(),
+                );
+                let stroke = egui::Stroke::new(2.0, egui::Color32::YELLOW);
+                painter.line_segment([min, egui::pos2(max.x, min.y)], stroke);
+                painter.line_segment([egui::pos2(max.x, min.y), max], stroke);
+                painter.line_segment([max, egui::pos2(min.x, max.y)], stroke);
+                painter.line_segment([egui::pos2(min.x, max.y), min], stroke);
+            }
+        }
+
+        egui::ComboBox::from_label("Apply selection to")
+            .selected_text(vision_target_label(self.vision.target))
+            .show_ui(ui, |ui| {
+                for target in vision_targets() {
+                    ui.selectable_value(
+                        &mut self.vision.target,
+                        target,
+                        vision_target_label(target),
+                    );
+                }
+            });
+        match self.vision.target {
+            VisionTarget::TabContent | VisionTarget::TabSelected | VisionTarget::TabUnselected => {
+                ui.horizontal(|ui| {
+                    ui.label("Tab index");
+                    ui.add(egui::DragValue::new(&mut self.vision.tab_index).range(0..=255));
+                    ui.label("Kind");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.vision.tab_kind).desired_width(90.0),
+                    );
+                    ui.label("Name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.vision.tab_name).desired_width(120.0),
+                    );
+                });
+                if matches!(self.vision.target, VisionTarget::TabContent) {
+                    ui.horizontal(|ui| {
+                        ui.label("Columns");
+                        ui.add(egui::DragValue::new(&mut self.vision.columns).range(1..=64));
+                        ui.label("Rows");
+                        ui.add(egui::DragValue::new(&mut self.vision.rows).range(1..=64));
+                    });
+                }
+            }
+            _ => {}
+        }
+        if let Some(selection) = self.vision.selection {
+            ui.label(format!(
+                "Selection: x {:.4} y {:.4} w {:.4} h {:.4}",
+                selection.x, selection.y, selection.w, selection.h
+            ));
+        }
+        if ui
+            .add_enabled(
+                self.vision.selection.is_some() && !self.busy,
+                egui::Button::new("Apply selection"),
+            )
+            .clicked()
+        {
+            self.apply_vision_selection();
+        }
+    }
+
+    fn item_editor(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Item sources");
+        ui.label(
+            "Map each currency to an inventory point or a tab grid cell. The clipboard name is \
+             verified before clicking.",
+        );
+        let path = self.calibration_path();
+        let Some(calibration) = self.calibration.as_mut() else {
+            ui.label("Load a calibration first.");
+            return;
+        };
+        if calibration.tabs.is_empty() {
+            ui.label("Add a tab above before mapping tab sources.");
+        }
+        let first_tab = calibration.tabs.first().map(|tab| tab.index);
+        egui::Grid::new("item-sources")
+            .num_columns(4)
+            .spacing([8.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Item");
+                ui.label("Display name");
+                ui.label("Source");
+                ui.label("Position");
+                ui.end_row();
+                for key in Calibration::currency_targets() {
+                    let key = *key;
+                    match calibration.items.get_mut(key) {
+                        Some(item) => {
+                            ui.label(key);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut item.display_name)
+                                    .desired_width(210.0),
+                            );
+                            let is_tab = matches!(item.source, ItemSource::Tab { .. });
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(!is_tab, "Inventory").clicked() {
+                                    item.source = ItemSource::Inventory { x: 0.5, y: 0.5 };
+                                }
+                                let tab_enabled = first_tab.is_some();
+                                if ui
+                                    .add_enabled(
+                                        tab_enabled,
+                                        egui::Button::new("Tab").selected(is_tab),
+                                    )
+                                    .clicked()
+                                {
+                                    item.source = ItemSource::Tab {
+                                        tab: first_tab.unwrap_or(0),
+                                        column: 0,
+                                        row: 0,
+                                    };
+                                }
+                            });
+                            match &mut item.source {
+                                ItemSource::Inventory { x, y } => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("x");
+                                        ui.add(
+                                            egui::DragValue::new(x).speed(0.001).range(0.0..=1.0),
+                                        );
+                                        ui.label("y");
+                                        ui.add(
+                                            egui::DragValue::new(y).speed(0.001).range(0.0..=1.0),
+                                        );
+                                    });
+                                }
+                                ItemSource::Tab { tab, column, row } => {
+                                    ui.horizontal(|ui| {
+                                        ui.label("tab");
+                                        ui.add(egui::DragValue::new(tab).range(0..=255));
+                                        ui.label("col");
+                                        ui.add(egui::DragValue::new(column).range(0..=63));
+                                        ui.label("row");
+                                        ui.add(egui::DragValue::new(row).range(0..=63));
+                                    });
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label(key);
+                            ui.label("not configured");
+                            ui.horizontal(|ui| {
+                                if ui.button("Add inventory").clicked() {
+                                    calibration.items.insert(
+                                        key.to_string(),
+                                        ItemConfig {
+                                            display_name: default_item_name(key).to_string(),
+                                            source: ItemSource::Inventory { x: 0.5, y: 0.5 },
+                                        },
+                                    );
+                                }
+                                if let Some(tab) = first_tab {
+                                    if ui.button("Add tab").clicked() {
+                                        calibration.items.insert(
+                                            key.to_string(),
+                                            ItemConfig {
+                                                display_name: default_item_name(key).to_string(),
+                                                source: ItemSource::Tab {
+                                                    tab,
+                                                    column: 0,
+                                                    row: 0,
+                                                },
+                                            },
+                                        );
+                                    }
+                                }
+                            });
+                            ui.label("");
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+        if ui.button("Save item sources").clicked() {
+            match calibration.save(&path) {
+                Ok(()) => {
+                    self.vision.message = format!("Saved item sources to {}", path.display());
+                    self.status = self.vision.message.clone();
+                }
+                Err(error) => {
+                    self.vision.message = format!("Cannot save calibration: {error}");
+                }
+            }
+        }
+    }
+
     fn start_inspect(&mut self) {
         let text = if self.item_text.trim().is_empty() {
             let path = PathBuf::from(&self.item_path);
@@ -606,6 +1135,17 @@ impl PoEApp {
             if self.update_busy {
                 self.status = "Wait for the update check to finish.".to_string();
             }
+            return;
+        }
+        let item_anchor = self.pending_item_anchor.take();
+        let has_legacy_item = self
+            .calibration
+            .as_ref()
+            .is_some_and(|calibration| calibration.item.is_some());
+        if item_anchor.is_none() && !has_legacy_item {
+            self.status =
+                "Hover the item in game and press the start hotkey, or calibrate an item point."
+                    .to_string();
             return;
         }
         let cache = self.cache();
@@ -664,6 +1204,7 @@ impl PoEApp {
                 max_cost,
                 verify_currency,
                 hold_currency,
+                item_anchor,
                 cancel,
                 sender: sender.clone(),
             });
@@ -846,6 +1387,17 @@ impl PoEApp {
         if let Some(calibration) = &self.calibration {
             ui.label(calibration_summary(calibration));
         }
+        ui.separator();
+        ui.push_id("vision-editor", |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("vision-scroll")
+                .max_height(420.0)
+                .show(ui, |ui| {
+                    self.vision_editor(ui);
+                    ui.separator();
+                    self.item_editor(ui);
+                });
+        });
     }
 
     fn inspect_tab(&mut self, ui: &mut egui::Ui) {
@@ -1116,6 +1668,7 @@ impl PoEApp {
                 .add_enabled(!self.running && !self.update_busy, egui::Button::new(label))
                 .clicked()
             {
+                self.pending_item_anchor = None;
                 self.start_session();
             }
             if ui
@@ -1128,11 +1681,21 @@ impl PoEApp {
                 ui.spinner();
             }
         });
+        ui.label(format!(
+            "Item anchor: hover the item in game and press {}; the button uses a legacy calibrated item point.",
+            self.config.hotkeys.start
+        ));
         if let Some(calibration) = &self.calibration {
-            if calibration.panel.is_none() {
+            if calibration.guard.is_none() && calibration.panel.is_none() {
                 ui.colored_label(
                     egui::Color32::YELLOW,
-                    "Panel guard is off. Calibrate `panel` on the open stash/inventory for a pre-click guard.",
+                    "Panel guard is off. Configure an image guard on the open stash/inventory for a pre-click guard.",
+                );
+            }
+            if calibration.item.is_none() {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "No legacy item point is calibrated; use the start hotkey while hovering the item.",
                 );
             }
         }
@@ -1258,6 +1821,88 @@ fn output(ui: &mut egui::Ui, text: &str) {
         });
 }
 
+fn vision_targets() -> [VisionTarget; 6] {
+    [
+        VisionTarget::Guard,
+        VisionTarget::HorizontalStrip,
+        VisionTarget::VerticalStrip,
+        VisionTarget::TabContent,
+        VisionTarget::TabSelected,
+        VisionTarget::TabUnselected,
+    ]
+}
+
+fn vision_target_label(target: VisionTarget) -> &'static str {
+    match target {
+        VisionTarget::None => "Nothing",
+        VisionTarget::Guard => "Panel guard",
+        VisionTarget::HorizontalStrip => "Horizontal tab strip",
+        VisionTarget::VerticalStrip => "Vertical tab strip",
+        VisionTarget::TabContent => "Tab content grid",
+        VisionTarget::TabSelected => "Tab selected template",
+        VisionTarget::TabUnselected => "Tab unselected template",
+    }
+}
+
+fn drag_rect(frame: egui::Rect, start: egui::Pos2, current: egui::Pos2) -> Option<NormRect> {
+    let clamp = |point: egui::Pos2| {
+        egui::pos2(
+            point.x.clamp(frame.left(), frame.right()),
+            point.y.clamp(frame.top(), frame.bottom()),
+        )
+    };
+    let start = clamp(start);
+    let current = clamp(current);
+    let min_x = start.x.min(current.x);
+    let min_y = start.y.min(current.y);
+    let max_x = start.x.max(current.x);
+    let max_y = start.y.max(current.y);
+    let x = (min_x - frame.left()) / frame.width().max(1.0);
+    let y = (min_y - frame.top()) / frame.height().max(1.0);
+    let w = (max_x - min_x) / frame.width().max(1.0);
+    let h = (max_y - min_y) / frame.height().max(1.0);
+    let rect = NormRect::new(x, y, w, h);
+    (w > 0.002 && h > 0.002 && rect.is_valid()).then_some(rect)
+}
+
+fn save_crop(
+    image: &CapturedImage,
+    calibration_path: &Path,
+    rect: NormRect,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    let (x, y, w, h) = rect.to_pixels(0, 0, image.width as i32, image.height as i32);
+    let x = x.clamp(0, image.width as i32 - 1);
+    let y = y.clamp(0, image.height as i32 - 1);
+    let w = w.min(image.width as i32 - x).max(1);
+    let h = h.min(image.height as i32 - y).max(1);
+    let crop = image
+        .crop(x, y, w, h)
+        .ok_or_else(|| "selection is outside the screenshot".to_string())?;
+    let dir = calibration_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("calibration-templates");
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join(filename);
+    crop.save_png(&path).map_err(|error| error.to_string())?;
+    Ok(PathBuf::from("calibration-templates").join(filename))
+}
+
+fn default_item_name(key: &str) -> &'static str {
+    match key {
+        "transmute" => "Orb of Transmutation",
+        "alt" => "Orb of Alteration",
+        "aug" => "Orb of Augmentation",
+        "regal" => "Regal Orb",
+        "alch" => "Orb of Alchemy",
+        "scour" => "Orb of Scouring",
+        "chaos" => "Chaos Orb",
+        _ => "Item",
+    }
+}
+
 fn calibration_summary(calibration: &Calibration) -> String {
     let mut out = String::new();
     out.push_str(&format!("Game title: {}\n", calibration.game_title));
@@ -1269,12 +1914,57 @@ fn calibration_summary(calibration: &Calibration) -> String {
             None => out.push_str(&format!("{target:<10} missing\n")),
         }
     }
-    match calibration.panel {
-        Some(panel) => out.push_str(&format!(
-            "{TARGET_PANEL:<10} ({:.4}, {:.4}) {:?} +/- {}\n",
-            panel.point.x, panel.point.y, panel.color, panel.tolerance
+    match &calibration.guard {
+        Some(guard) => out.push_str(&format!(
+            "guard      image {} threshold {:.2}\n",
+            guard.reference.display(),
+            guard.threshold
         )),
-        None => out.push_str(&format!("{TARGET_PANEL:<10} missing (optional)\n")),
+        None => match calibration.panel {
+            Some(panel) => out.push_str(&format!(
+                "{TARGET_PANEL:<10} legacy pixel ({:.4}, {:.4}) {:?} +/- {}\n",
+                panel.point.x, panel.point.y, panel.color, panel.tolerance
+            )),
+            None => out.push_str(&format!("{TARGET_PANEL:<10} missing (optional)\n")),
+        },
+    }
+    out.push_str(&format!(
+        "strips     horizontal {}, vertical {}\n",
+        if calibration.strips.horizontal.is_some() {
+            "on"
+        } else {
+            "off"
+        },
+        if calibration.strips.vertical.is_some() {
+            "on"
+        } else {
+            "off"
+        }
+    ));
+    for tab in &calibration.tabs {
+        out.push_str(&format!(
+            "tab {:<3}    {} {}x{} grid\n",
+            tab.index,
+            if tab.name.is_empty() {
+                &tab.kind
+            } else {
+                &tab.name
+            },
+            tab.content.columns,
+            tab.content.rows
+        ));
+    }
+    for (key, item) in &calibration.items {
+        match &item.source {
+            ItemSource::Inventory { x, y } => out.push_str(&format!(
+                "item {key:<6} {} inventory ({x:.3}, {y:.3})\n",
+                item.display_name
+            )),
+            ItemSource::Tab { tab, column, row } => out.push_str(&format!(
+                "item {key:<6} {} tab {tab} cell ({column}, {row})\n",
+                item.display_name
+            )),
+        }
     }
     out
 }
@@ -1353,7 +2043,21 @@ fn doctor_report(cache: &Path, calibration: &Path, config_path: &Path) -> Result
                 ));
                 let missing = calibration.missing(Calibration::all_targets());
                 if !missing.is_empty() {
-                    out.push_str(&format!("Missing: {}\n", missing.join(", ")));
+                    out.push_str(&format!("Missing legacy targets: {}\n", missing.join(", ")));
+                }
+                if let (Some(width), Some(height)) =
+                    (calibration.captured_width, calibration.captured_height)
+                {
+                    if let Ok(game) = Win32Game::find(&calibration.game_title) {
+                        if let Ok(info) = game.window_info() {
+                            if width != info.client_width || height != info.client_height {
+                                out.push_str(&format!(
+                                    "Warning: templates calibrated at {width}x{height}, client is {}x{}.\n",
+                                    info.client_width, info.client_height
+                                ));
+                            }
+                        }
+                    }
                 }
             }
             Err(error) => out.push_str(&format!("Calibration error: {error}\n")),
@@ -2422,6 +3126,7 @@ struct SessionRequest {
     max_cost: Option<f64>,
     verify_currency: bool,
     hold_currency: bool,
+    item_anchor: Option<(i32, i32)>,
     cancel: Arc<AtomicBool>,
     sender: Sender<WorkerMessage>,
 }
@@ -2449,14 +3154,16 @@ fn run_session_inner(request: &SessionRequest) -> Result<SessionResult, String> 
     let data = load_ui_data(&request.cache)?;
     let plan = PlanFile::load(&request.plan).map_err(|error| error.to_string())?;
     let calibration = Calibration::load(&request.calibration).map_err(|error| error.to_string())?;
-    if calibration.item.is_none() {
-        return Err("Calibration item slot is missing.".to_string());
-    }
+    let used_currencies = plan_currencies(&plan).unwrap_or_else(|| Currency::ALL.to_vec());
     if !request.dry_run {
-        let missing = calibration.missing(Calibration::all_targets());
+        let required = used_currencies
+            .iter()
+            .map(|currency| currency.key())
+            .collect::<Vec<_>>();
+        let missing = calibration.missing(&required);
         if !missing.is_empty() {
             return Err(format!(
-                "Calibration is incomplete; missing: {}.",
+                "Calibration is incomplete; missing sources: {}.",
                 missing.join(", ")
             ));
         }
@@ -2468,7 +3175,37 @@ fn run_session_inner(request: &SessionRequest) -> Result<SessionResult, String> 
     let mut game = Win32Game::find(&calibration.game_title).map_err(|error| error.to_string())?;
     game.set_action_delay(delays.action);
     game.apply_hotkeys(hotkeys);
-    let mut io = Win32GameIo::new(game, calibration);
+    let info = game.window_info().map_err(|error| error.to_string())?;
+    let item_anchor = match request.item_anchor {
+        Some((x, y)) => Some(
+            NormPoint::from_screen(
+                x,
+                y,
+                info.origin_x,
+                info.origin_y,
+                info.client_width,
+                info.client_height,
+            )
+            .ok_or_else(|| {
+                "the captured item anchor is outside the game client area".to_string()
+            })?,
+        ),
+        None => None,
+    };
+    let mut io = Win32GameIo::new(game, calibration, Some(request.calibration.clone()))
+        .map_err(|error| format!("loading vision templates: {error}"))?;
+    io.set_diagnostics_dir(request.log_dir.clone());
+    match item_anchor {
+        Some(point) => io.set_item_anchor(point),
+        None if io.calibration.item.is_none() => {
+            return Err(
+                "No item anchor. Hover the item in game and press the start hotkey.".to_string(),
+            )
+        }
+        None => {}
+    }
+    io.validate_item_anchor(&used_currencies)
+        .map_err(|error| error.to_string())?;
     io.game.focus().map_err(|error| error.to_string())?;
 
     let config = SessionConfig {

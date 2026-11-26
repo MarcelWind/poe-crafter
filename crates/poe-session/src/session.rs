@@ -645,6 +645,7 @@ impl<'a> CraftSession<'a> {
 
                 let before_text = current.text.clone();
                 let before_fingerprint = current_fingerprint;
+                self.io.prepare_source(currency)?;
                 let currency_before = if self.config.verify_currency {
                     Some(self.io.read_currency(currency)?)
                 } else {
@@ -793,6 +794,7 @@ impl<'a> CraftSession<'a> {
             return Ok(());
         }
         self.end_held()?;
+        self.io.prepare_source(currency)?;
         let count_before = if self.config.verify_currency {
             Some(self.io.read_currency(currency)?)
         } else {
@@ -974,6 +976,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::rc::Rc;
 
+    use crate::currency::plan_currencies;
     use crate::mock::MockGame;
     use poe_data::{BaseItem, DataVersion, Mod, ModDomain, ModType, PobData};
 
@@ -1155,6 +1158,64 @@ transmute = 0.01
         assert!(report.success);
         assert_eq!(report.stop_reason, StopReason::GoalReached);
         assert_eq!(report.currency_used.get("alt"), Some(&1));
+    }
+
+    #[test]
+    fn plan_currencies_covers_runtime_choices() {
+        let alt = plan_currencies(&step_plan()).unwrap();
+        for currency in [Currency::Alt, Currency::Transmute, Currency::Scour] {
+            assert!(alt.contains(&currency), "alt plan missing {currency:?}");
+        }
+
+        let chaos = PlanFile::from_toml(
+            r#"
+schema = 2
+name = "chaos currency coverage"
+start = "normal"
+
+[base]
+item_class = "Ring"
+base_names = ["Test Ring"]
+item_level = 86
+
+[[steps]]
+name = "chaos"
+action = "chaos"
+max_attempts = 100
+
+[steps.goal]
+min_prefixes = 1
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "Life"
+
+[costs]
+alch = 0.1
+regal = 0.2
+chaos = 0.3
+scour = 0.05
+"#,
+        )
+        .unwrap();
+        let chaos = plan_currencies(&chaos).unwrap();
+        for currency in [
+            Currency::Alch,
+            Currency::Regal,
+            Currency::Chaos,
+            Currency::Scour,
+        ] {
+            assert!(chaos.contains(&currency), "chaos plan missing {currency:?}");
+        }
+    }
+
+    #[test]
+    fn prepares_source_only_before_pickup() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(10));
+        session(&data, &mut game).run().unwrap();
+        assert_eq!(game.prepared, vec![Currency::Alt]);
+        assert!(game.prepared_while_held.is_empty());
     }
 
     #[test]
