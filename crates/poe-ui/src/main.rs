@@ -455,8 +455,20 @@ impl PoEApp {
             }
         });
         ui.separator();
-        path_row(ui, "Data cache", &mut self.cache_path);
-        path_row(ui, "Calibration", &mut self.calibration_path);
+        path_row(
+            ui,
+            "Data cache",
+            &mut self.cache_path,
+            PathKind::File,
+            "target",
+        );
+        path_row(
+            ui,
+            "Calibration",
+            &mut self.calibration_path,
+            PathKind::File,
+            ".",
+        );
         ui.separator();
         if let Some(calibration) = &self.calibration {
             ui.label(calibration_summary(calibration));
@@ -473,7 +485,13 @@ impl PoEApp {
             "Focus Path of Exile, hover the requested slot, then press F8. \
              A panel guard is an optional pixel probe on a stable part of the open stash/inventory.",
         );
-        path_row(ui, "Calibration", &mut self.calibration_path);
+        path_row(
+            ui,
+            "Calibration",
+            &mut self.calibration_path,
+            PathKind::File,
+            ".",
+        );
         ui.horizontal(|ui| {
             egui::ComboBox::from_label("Target")
                 .selected_text(&self.target)
@@ -504,7 +522,13 @@ impl PoEApp {
     fn inspect_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Item Inspector");
         ui.label("Load a captured item text file or paste item text.");
-        path_row(ui, "Item file", &mut self.item_path);
+        path_row(
+            ui,
+            "Item file",
+            &mut self.item_path,
+            PathKind::File,
+            "samples/items",
+        );
         ui.horizontal(|ui| {
             if ui.button("Load file").clicked() {
                 if let Ok(text) = std::fs::read_to_string(PathBuf::from(&self.item_path)) {
@@ -529,8 +553,20 @@ impl PoEApp {
 
     fn plan_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Plan");
-        path_row(ui, "Data cache", &mut self.cache_path);
-        path_row(ui, "Plan file", &mut self.plan_path);
+        path_row(
+            ui,
+            "Data cache",
+            &mut self.cache_path,
+            PathKind::File,
+            "target",
+        );
+        path_row(
+            ui,
+            "Plan file",
+            &mut self.plan_path,
+            PathKind::File,
+            "plans",
+        );
         ui.horizontal(|ui| {
             if ui.button("Validate").clicked() {
                 self.start_validate();
@@ -553,11 +589,29 @@ impl PoEApp {
             "Dry run reads the item and recommends an action. A real run sends mouse clicks; \
              keep the stash/inventory open and use F12 to stop.",
         );
-        path_row(ui, "Data cache", &mut self.cache_path);
-        path_row(ui, "Plan", &mut self.plan_path);
-        path_row(ui, "Calibration", &mut self.calibration_path);
-        path_row(ui, "Delays", &mut self.delays_path);
-        path_row(ui, "Log directory", &mut self.log_dir);
+        path_row(
+            ui,
+            "Data cache",
+            &mut self.cache_path,
+            PathKind::File,
+            "target",
+        );
+        path_row(ui, "Plan", &mut self.plan_path, PathKind::File, "plans");
+        path_row(
+            ui,
+            "Calibration",
+            &mut self.calibration_path,
+            PathKind::File,
+            ".",
+        );
+        path_row(ui, "Delays", &mut self.delays_path, PathKind::File, ".");
+        path_row(
+            ui,
+            "Log directory",
+            &mut self.log_dir,
+            PathKind::Directory,
+            "logs",
+        );
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.dry_run, "Dry run");
             ui.checkbox(&mut self.once, "One step");
@@ -633,19 +687,68 @@ impl Drop for PoEApp {
     }
 }
 
-fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String) {
+#[derive(Debug, Clone, Copy)]
+enum PathKind {
+    File,
+    Directory,
+}
+
+fn path_row(ui: &mut egui::Ui, label: &str, value: &mut String, kind: PathKind, default_dir: &str) {
     egui::Grid::new(label)
         .num_columns(2)
         .spacing([8.0, 4.0])
         .show(ui, |ui| {
             ui.label(label);
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace),
-            );
+            ui.horizontal(|ui| {
+                let width = (ui.available_width() - 78.0).max(120.0);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .desired_width(width)
+                        .font(egui::TextStyle::Monospace),
+                );
+                if ui.button("Browse").clicked() {
+                    if let Some(selected) = pick_path(value, kind, default_dir) {
+                        *value = selected.display().to_string();
+                    }
+                }
+            });
             ui.end_row();
         });
+}
+
+fn pick_path(current: &str, kind: PathKind, default_dir: &str) -> Option<PathBuf> {
+    let current = Path::new(current);
+    let mut dialog = rfd::FileDialog::new();
+    let default = if default_dir == "." {
+        std::env::current_dir().ok()
+    } else {
+        Some(PathBuf::from(default_dir))
+    };
+    let start = default.filter(|directory| directory.is_dir()).or_else(|| {
+        current
+            .parent()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+    });
+    if let Some(directory) = start {
+        dialog = dialog.set_directory(directory);
+    }
+    match kind {
+        PathKind::Directory => dialog.pick_folder(),
+        PathKind::File => {
+            if let Some(name) = current.file_name().and_then(|name| name.to_str()) {
+                let extension = current
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .unwrap_or_default();
+                if !extension.is_empty() {
+                    dialog = dialog.add_filter(extension, &[extension]);
+                }
+                dialog = dialog.set_file_name(name);
+            }
+            dialog.pick_file()
+        }
+    }
 }
 
 fn output(ui: &mut egui::Ui, text: &str) {
