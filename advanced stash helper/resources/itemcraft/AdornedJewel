@@ -1,0 +1,31 @@
+[rare]
+0=[1] +# to maximum Mana(26)
+1=[1] +# to maximum Energy Shield(31)
+2=[1] +#% to all Elemental Resistances(0)
+3=[1] +#% to Cold and Lightning Resistances(0)
+4=[1] +#% to Fire and Lightning Resistances(0)
+5=[1] +#% to Lightning Resistance(0)
+6=[1] +# to Dexterity and Intelligence(0)
+7=[1] +# to Intelligence(0)
+8=[1] +# to Strength and Intelligence(0)
+9=[1] +# to all Attributes(0)
+[other]
+craft_type=0
+aug_logic=2
+aug_r_logic=0
+craft_logic=0
+weight_rare=1
+weight_magic=1
+[magic]
+0=[S][1] +# to all Attributes(0)
+1=[S][1] +# to Dexterity and Intelligence(0)
+2=[S][1] +# to Intelligence(0)
+3=[S][1] +# to Strength and Intelligence(0)
+4=[S][1] +#% to all Elemental Resistances(0)
+5=[S][1] +#% to Cold and Lightning Resistances(0)
+6=[S][1] +#% to Fire and Lightning Resistances(0)
+7=[S][1] +#% to Lightning Resistance(0)
+8=[P][1] +# to maximum Mana(26)
+9=[P][1] +# to maximum Energy Shield(31)
+10=[S][1] +#% to Cold Resistance(31)
+11=[S][1] +#% to Fire Resistance(31)

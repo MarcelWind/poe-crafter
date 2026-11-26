@@ -1,0 +1,40 @@
+Item Class: Boots
+Rarity: Rare
+Brimstone March
+Phantom Boots
+--------
+Quality: +20% (augmented)
+Evasion Rating: 419 (augmented)
+Energy Shield: 84 (augmented)
+--------
+Requirements:
+Level: 84
+Str: 159
+Dex: 98
+Int: 98
+--------
+Sockets: B-B-G-R 
+--------
+Item Level: 84
+--------
+{ Searing Exarch Implicit Modifier (Exceptional) — Elemental, Lightning, Ailment }
+44(42-44)% chance to Avoid being Shocked
+{ Eater of Worlds Implicit Modifier (Lesser) — Damage, Physical, Chaos }
+Gain 4% of Physical Damage as Extra Chaos Damage
+--------
+{ Prefix Modifier "Cheetah's" (Tier: 2) — Speed }
+30% increased Movement Speed
+{ Prefix Modifier "Ephemeral" (Tier: 4) — Defences, Evasion, Energy Shield }
+56(56-67)% increased Evasion and Energy Shield
+{ Prefix Modifier "Athlete's" (Tier: 1) — Life }
++125(115-129) to maximum Life
+{ Fractured Suffix Modifier "of Haast" (Tier: 1) — Elemental, Cold, Resistance }
++47(46-48)% to Cold Resistance
+{ Suffix Modifier "of the Essence" — Elemental, Lightning, Ailment }
+58(56-60)% chance to Avoid being Shocked
+{ Suffix Modifier "of Ephij" (Tier: 1) — Elemental, Lightning, Resistance }
++46(46-48)% to Lightning Resistance
+Searing Exarch Item
+Eater of Worlds Item
+--------
+Fractured Item

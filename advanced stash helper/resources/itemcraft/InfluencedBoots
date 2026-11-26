@@ -1,0 +1,16 @@
+[rare]
+0=[1] You have Tailwind if you have dealt a Critical Strike Recently
+1=[1] #% chance to gain Onslaught for 4 seconds on Kill(8)
+2=[1] +1 to Maximum Frenzy Charges
+3=[1] Non-Vaal Strike Skills target 1 additional nearby Enemy
+4=[1] Culling Strike
+5=[1] #% increased Cooldown Recovery Rate(10)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=2
+weight_rare=1
+weight_magic=1
+[magic]
+0=[S][1] #% chance to gain Onslaught for 4 seconds on Kill(8)

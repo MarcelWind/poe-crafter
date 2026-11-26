@@ -1,0 +1,17 @@
+[magic]
+0=[P][2] +# to maximum Mana(140)
+1=[P][2] #% increased Spell Damage(85)
+2=[P][1] #% increased Spell Damage(30)
+3=[P][1] +# to maximum Mana(38)
+4=[P][2] +# to Level of all Spell Skill Gems(1)
+5=[P][2] +# to Level of all Physical Spell Skill Gems(1)
+6=[P][2] #% increased Cold Damage(100)
+7=[P][2] #% increased Lightning Damage(100)
+8=[P][2] +# to Level of all Lightning Spell Skill Gems(1)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

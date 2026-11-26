@@ -1,0 +1,13 @@
+Item Class: Boots
+Rarity: Rare
+Doom Pace
+Sorcerer Boots
+--------
+Energy Shield: 143 (augmented)
+--------
+Item Level: 86
+--------
++96% increased Energy Shield (fractured)
++44 to maximum Energy Shield
++35% increased Movement Speed
++80 to maximum Life

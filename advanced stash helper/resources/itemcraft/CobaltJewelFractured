@@ -1,0 +1,10 @@
+[magic]
+0=[P][1] #% increased maximum Energy Shield(0)
+1=[P][1] +#% Chance to Block Spell Damage while holding a Shield(0)
+[other]
+craft_type=0
+aug_logic=2
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=1

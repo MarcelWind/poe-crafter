@@ -1,0 +1,10 @@
+[package]
+name = "poe-item"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poe-data = { path = "../poe-data" }
+serde.workspace = true
+thiserror.workspace = true

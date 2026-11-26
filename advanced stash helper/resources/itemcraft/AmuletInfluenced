@@ -1,0 +1,18 @@
+[rare]
+0=[1] #% increased Intelligence(18)
+1=[1] #% increased Attributes(6)
+2=[1] #% increased Strength(9)
+3=[1] #% increased Intelligence(9)
+4=[1] 1% increased Damage per 15 Intelligence
+5=[1] 1% increased Damage per 15 Strength
+6=[1] +# to Level of all Skill Gems(1)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=2
+weight_rare=1
+weight_magic=1
+[magic]
+0=[S][1] #% increased Intelligence(9)
+1=[S][1] #% increased Attributes(6)

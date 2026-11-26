@@ -1,0 +1,6 @@
+Rarity: Rare
+Name
+Royal Staff
+{ Prefix Modifier "Warlock's" (Tier: 4) — Mana, Damage, Caster }
+32(30-37)% increased Spell Damage
++46(42-47) to maximum Mana

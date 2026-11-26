@@ -1,0 +1,30 @@
+Item Class: Rings
+Rarity: Unique
+Ming's Heart
+Amethyst Ring
+--------
+Quality (Physical and Chaos Damage Modifiers): +20% (augmented)
+--------
+Requirements:
+Level: 69
+--------
+Item Level: 85
+--------
+{ Implicit Modifier — Chaos, Resistance }
++19(13-19)% to Chaos Resistance
+--------
+{ Unique Modifier — Damage, Physical, Chaos  — 20% Increased }
+Gain 60(40-60)% of Physical Damage as Extra Chaos Damage
+{ Unique Modifier — Chaos, Resistance }
++47(40-50)% to Chaos Resistance
+{ Unique Modifier — Life }
+25% reduced maximum Life
+{ Unique Modifier — Defences, Energy Shield }
+25% reduced maximum Energy Shield
+--------
+Ming slew Tranquillity
+Took Chaos for his wife
+And on Her immortal finger
+He placed his Heart
+--------
+Crusader Item

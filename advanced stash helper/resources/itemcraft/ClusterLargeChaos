@@ -1,0 +1,22 @@
+[magic]
+0=[P][1] 1 Added Passive Skill is Unwaveringly Evil
+1=[S][1] 1 Added Passive Skill is Grim Oath
+2=[S][1] 1 Added Passive Skill is Unholy Grace
+3=[S][2] 1 Added Passive Skill is Unspeakable Gifts
+4=[P][1] 1 Added Passive Skill is Wicked Pall
+5=[P][1] 1 Added Passive Skill is Overwhelming Malice
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=2
+weight_magic=2
+[rare]
+0=[3] 1 Added Passive Skill is Unspeakable Gifts
+1=[1] 1 Added Passive Skill is Grim Oath
+2=[1] 1 Added Passive Skill is Unholy Grace
+3=[1] 1 Added Passive Skill is Overwhelming Malice
+4=[1] 1 Added Passive Skill is Touch of Cruelty
+5=[1] 1 Added Passive Skill is Unwaveringly Evil
+6=[1] 1 Added Passive Skill is Wicked Pall

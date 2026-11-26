@@ -1,0 +1,14 @@
+[magic]
+0=[P][2] #% increased Evasion and Energy Shield(101)
+1=[P][1] +# to Evasion Rating(330)
+2=[P][1] +# to maximum Energy Shield(73)
+3=[P][1] #% increased Stun and Block Recovery(16)
+4=[S][2] +#% chance to Suppress Spell Damage(20)
+5=[P][1] #% increased Evasion and Energy Shield(41)
+[other]
+craft_type=0
+aug_logic=0
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

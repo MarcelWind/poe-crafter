@@ -1,0 +1,9 @@
+[rare]
+0=[1] Bow Attacks fire # additional Arrows(2)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=1
+craft_logic=2
+weight_rare=1
+weight_magic=2

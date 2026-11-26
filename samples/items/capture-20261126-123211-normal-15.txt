@@ -1,0 +1,23 @@
+Item Class: Support Gems
+Rarity: Gem
+Increased Critical Damage Support
+--------
+Critical, Support
+Level: 20 (Max)
+Cost & Reservation Multiplier: 130%
+Quality: +23% (augmented)
+--------
+Requirements:
+Level: 70
+Int: 111
+--------
+Supports any skill that hits enemies.
+--------
+Supported Skills have +138% to Critical Strike Multiplier
+
+Additional Effects From Quality:
+Supported Skills have +11(0-10)% to Critical Strike Multiplier
+--------
+This is a Support Gem. It does not grant a bonus to your character, but to skills in sockets connected to it. Place into an item socket connected to a socket containing the Skill Gem you wish to augment. Right click to remove from a socket.
+--------
+Corrupted

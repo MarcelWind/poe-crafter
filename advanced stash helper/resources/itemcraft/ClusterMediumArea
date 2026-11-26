@@ -1,0 +1,11 @@
+[magic]
+0=[P][1] 1 Added Passive Skill is Magnifier
+1=[P][1] 1 Added Passive Skill is Towering Threat
+2=[P][1] 1 Added Passive Skill is Assert Dominance
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=3
+weight_magic=1

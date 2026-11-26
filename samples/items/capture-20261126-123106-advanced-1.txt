@@ -1,0 +1,21 @@
+Item Class: Amulets
+Rarity: Magic
+Croaker Talisman of the Mongoose
+--------
+Requirements:
+Level: 36
+--------
+Item Level: 85
+--------
++1 to Level of all Skill Gems (enchant)
+--------
+{ Suffix Modifier "of the Mongoose" (Tier: 9) — Attribute }
++12(8-12) to Dexterity
+--------
+"Ezomyr grew on a foundation of
+choice. Its climate was chosen. Its
+animals were chosen. For once,
+Wraeclast was not harsh, but kind."
+--------
+Crusader Item
+Hunter Item

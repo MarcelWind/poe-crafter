@@ -1,0 +1,17 @@
+[magic]
+0=[P][1] Socketed Gems are Supported by Level 10 Power Charge On Critical Strike
+1=[S][1] +1 to Maximum Power Charges
+2=[P][1] Socketed Skills deal 20% more Attack Damage
+3=[S][1] #% increased Attack Speed if you've Killed Recently(20)
+4=[S][1] 20% increased Attack Speed if you've Killed Recently
+5=[S][1] #% chance to deal Double Damage(7)
+[rare]
+0=[1] Socketed Skills deal #% more Attack Damage(0)
+1=[1] +1 to Maximum Power Charges
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=1
+craft_logic=0
+weight_rare=1
+weight_magic=1

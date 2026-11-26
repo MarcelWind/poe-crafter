@@ -1,0 +1,34 @@
+Item Class: Shields
+Rarity: Rare
+Gale Bastion
+Imperial Buckler
+--------
+Quality: +20% (augmented)
+Chance to Block: 25%
+Evasion Rating: 1044 (augmented)
+--------
+Requirements:
+Level: 72
+Str: 155
+Dex: 159
+--------
+Sockets: G-W-G 
+--------
+Item Level: 85
+--------
+{ Implicit Modifier — Speed }
+6% increased Movement Speed
+--------
+{ Prefix Modifier "Mirage's" (Tier: 2) — Defences, Evasion }
+92(92-100)% increased Evasion Rating
+{ Prefix Modifier "Seer's" (Tier: 2) }
+13(12-13)% Chance to Block Spell Damage
+{ Prefix Modifier "Vigorous" (Tier: 1) — Life }
++154(145-159) to maximum Life
+{ Suffix Modifier "of the Ice" (Tier: 2) — Elemental, Cold, Resistance }
++43(42-45)% to Cold Resistance
+{ Suffix Modifier "of Abjuration" (Tier: 2) }
++18(17-19)% chance to Suppress Spell Damage
+(40% of Damage from Suppressed Hits and Ailments they inflict is prevented)
+{ Suffix Modifier "of the Span" (Tier: 1) — Elemental, Resistance }
++17(17-18)% to all Elemental Resistances

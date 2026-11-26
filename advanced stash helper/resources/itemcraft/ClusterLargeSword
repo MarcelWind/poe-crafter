@@ -1,0 +1,15 @@
+[magic]
+0=[P][2] 1 Added Passive Skill is Bloodscent
+1=[P][1] 1 Added Passive Skill is Fuel the Fight
+2=[P][1] 1 Added Passive Skill is Feed the Fury
+3=[S][1] 1 Added Passive Skill is Martial Prowess
+4=[S][1] 1 Added Passive Skill is Smite the Weak
+5=[S][1] 1 Added Passive Skill is Heavy Hitter
+6=[P][1] 1 Added Passive Skill is Devastator
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=2
+weight_magic=2

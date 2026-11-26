@@ -1,0 +1,13 @@
+[magic]
+0=[P][1] Added Small Passive Skills have #% increased Effect(35)
+1=[P][1] Added Small Passive Skills also grant: +# to Maximum Life(8)
+2=[P][1] Added Small Passive Skills also grant: #% increased Damage(4)
+3=[S][1] Added Small Passive Skills also grant: #% increased Attack Speed(3)
+4=[S][1] Added Small Passive Skills also grant: +#% to all Elemental Resistances(4)
+[other]
+craft_type=0
+aug_logic=2
+aug_r_logic=1
+craft_logic=0
+weight_rare=2
+weight_magic=1

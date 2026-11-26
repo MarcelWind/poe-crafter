@@ -1,0 +1,21 @@
+[other]
+logic=0
+craft_type=1
+use_aug=0
+[prefix]
+0=Experimenter's
+1=Abecedarian's
+2=Dabbler's
+3=Alchemist's
+4=Flagellant's
+5=Surgeon's
+6=Perpetual
+[suffix]
+0=of the Cheetah
+1=of the Rainbow
+2=of Incision
+3=of the Initiate
+4=of the Armadillo
+5=of Tenaciousness
+6=of the Owl
+7=of Bog Moss

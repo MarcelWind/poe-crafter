@@ -1,0 +1,40 @@
+Item Class: Helmets
+Rarity: Rare
+Brimstone Guardian
+Torturer's Mask
+--------
+Quality: +21% (augmented)
+Evasion Rating: 1149 (augmented)
+Energy Shield: 230 (augmented)
+--------
+Requirements:
+Level: 84
+Str: 100
+Dex: 132
+Int: 159
+--------
+Sockets: W-B-W-B 
+--------
+Item Level: 85
+--------
+{ Searing Exarch Implicit Modifier (Grand) — Damage }
+5% increased Damage per Power Charge
+{ Eater of Worlds Implicit Modifier (Greater) — Physical, Elemental, Fire }
+6% of Physical Damage from Hits taken as Fire Damage
+--------
+{ Prefix Modifier "Hummingbird's" (Tier: 1) — Defences, Evasion, Energy Shield }
+40(39-42)% increased Evasion and Energy Shield
+16(16-17)% increased Stun and Block Recovery
+{ Prefix Modifier "Illusory" (Tier: 1) — Defences, Evasion, Energy Shield }
+95(92-100)% increased Evasion and Energy Shield
+{ Prefix Modifier "Fecund" (Tier: 1) — Life }
++143(130-144) to maximum Life
+{ Suffix Modifier "of Tzteosh" (Tier: 1) — Elemental, Fire, Resistance }
++48(46-48)% to Fire Resistance
+{ Suffix Modifier "of Haast" (Tier: 1) — Elemental, Cold, Resistance }
++46(46-48)% to Cold Resistance
+{ Suffix Modifier "of Nullification" (Tier: 1) }
++14(13-14)% chance to Suppress Spell Damage
+(40% of Damage from Suppressed Hits and Ailments they inflict is prevented)
+Searing Exarch Item
+Eater of Worlds Item

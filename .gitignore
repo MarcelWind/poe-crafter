@@ -1,0 +1,20 @@
+# Rust build output
+/target/
+
+# Generated data cache; rebuild with tools/lock-pob-data.py
+/data/pob/
+*.msgpack
+
+# Python tooling
+__pycache__/
+*.py[cod]
+
+# Legacy ASH tool: keep the small itemcraft plan corpus, exclude binaries,
+# personal calibration, images, and the old PoB snapshot.
+/advanced stash helper/ash.exe
+/advanced stash helper/resources/cports.exe
+/advanced stash helper/resources/cports.cfg
+/advanced stash helper/resources/settings.ini
+/advanced stash helper/resources/dll/
+/advanced stash helper/resources/data/
+/advanced stash helper/resources/images/

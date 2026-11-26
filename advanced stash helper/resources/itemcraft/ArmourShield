@@ -1,0 +1,16 @@
+[magic]
+0=[P][2] +# to maximum Life(152)
+1=[P][1] +# to maximum Life(30)
+2=[P][1] +# to Armour(49)
+3=[P][2] #% increased Chance to Block(75)
+4=[S][2] You take #% reduced Extra Damage from Critical Strikes(51)
+5=[S][2] #% additional Physical Damage Reduction(8)
+6=[P][2] #% Chance to Block Spell Damage(14)
+7=[S][2] +#% to all Maximum Resistances(2)
+[other]
+craft_type=0
+aug_logic=0
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

@@ -1,0 +1,25 @@
+[magic]
+0=[P][2] # Added Cold Damage with Bow Attacks(19)
+1=[P][2] # Added Cold Damage with Wand Attacks(19)
+2=[P][2] # Added Fire Damage with Bow Attacks(21)
+3=[P][2] # Added Fire Damage with Wand Attacks(21)
+4=[P][2] # Added Lightning Damage with Bow Attacks(25)
+5=[P][2] # Added Lightning Damage with Wand Attacks(25)
+6=[P][2] +# to maximum Life(36)
+7=[S][2] #% increased Attack Speed(5)
+8=[S][2] #% increased Attack Speed if you've dealt a Critical Strike Recently(5)
+9=[S][2] +#% to Global Critical Strike Multiplier(10)
+10=[S][2] Adds # Fire Damage to Attacks(17)
+11=[S][2] Adds # Cold Damage to Attacks(17)
+12=[S][2] Adds # Fire Damage to Attacks(19)
+13=[S][2] Adds # Lightning Damage to Attacks(22)
+14=[S][2] +#% to Cold Resistance(10)
+15=[S][2] +#% to Fire Resistance(10)
+16=[S][2] +#% to Lightning Resistance(10)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

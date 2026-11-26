@@ -1,0 +1,26 @@
+[magic]
+0=[P][2] #% increased maximum Life(0)
+1=[S][2] +#% to maximum Cold Resistance(0)
+2=[S][2] +#% to maximum Fire Resistance(0)
+3=[S][2] +#% to maximum Lightning Resistance(0)
+4=[S][2] +#% to Global Critical Strike Multiplier(0)
+5=[P][2] #% increased maximum Life(0)
+6=[P][1] #% increased maximum Energy Shield(0)
+7=[S][2] +#% to Critical Strike Multiplier for Spell Damage(0)
+8=[S][2] +#% to Critical Strike Multiplier with Elemental Skills(0)
+9=[P][1] +#% to Critical Strike Multiplier with Cold Skills(0)
+10=[P][1] +#% to Critical Strike Multiplier with Lightning Skills(0)
+11=[S][1] #% increased Mana Reservation Efficiency of Skills(0)
+12=[S][1] +#% to Chaos Damage over Time Multiplier(0)
+13=[S][1] +#% to Fire Damage over Time Multiplier(0)
+14=[S][1] +% Chance to Block Spell Damage while holding a Shield(0)
+15=[S][1] +% Chance to Block Attack Damage while holding a Shield(0)
+16=[S][1] #% of Damage taken Recouped as Life(0)
+17=[S][1] +% Chance to Block Attack Damage while holding a Shield(0)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

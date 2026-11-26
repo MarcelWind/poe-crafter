@@ -1,0 +1,10 @@
+[rare]
+0=[1] Added Small Passive Skills have #% increased Effect (35)
+1=[1] 1 Added Passive Skill is Introspection
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=2
+weight_rare=1
+weight_magic=2

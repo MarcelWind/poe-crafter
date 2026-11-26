@@ -1,0 +1,23 @@
+Item Class: Utility Flasks
+Rarity: Magic
+Chemist's Jade Flask of the Impala
+--------
+Quality: +20% (augmented)
+Lasts 7.20 (augmented) Seconds
+Consumes 21 (augmented) of 60 Charges on use
+Currently has 60 Charges
++1500 to Evasion Rating
+--------
+Requirements:
+Level: 67
+--------
+Item Level: 84
+--------
+Used when Charges reach full (enchant)
+--------
+{ Prefix Modifier "Chemist's" (Tier: 1) }
+27(28-26)% reduced Charges per use
+{ Suffix Modifier "of the Impala" (Tier: 1) — Defences, Evasion }
+58(56-60)% increased Evasion Rating during Effect
+--------
+Right click to drink. Can only hold charges while in belt. Refills as you kill monsters.

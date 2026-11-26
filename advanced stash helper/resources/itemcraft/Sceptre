@@ -1,0 +1,20 @@
+[magic]
+0=[P][2] #% increased Spell Damage(100)
+1=[P][2] #% increased Fire Damage(100)
+2=[P][2] #% increased Cold Damage(100)
+3=[P][2] #% increased Lightning Damage(100)
+4=[P][2] +# to Level of all Spell Skill Gems(1)
+5=[P][2] +# to Level of all Cold Spell Skill Gems(1)
+6=[P][2] +# to Level of all Fire Spell Skill Gems(1)
+7=[P][2] +# to Level of all Lightning Spell Skill Gems(1)
+8=[S][2] +#% to Fire Damage over Time Multiplier(24)
+9=[S][2] +#% to Damage over Time Multiplier(26)
+10=[S][2] #% increased Critical Strike Chance(38)
+11=[P][2] +# to Maximum Mana(150)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=1

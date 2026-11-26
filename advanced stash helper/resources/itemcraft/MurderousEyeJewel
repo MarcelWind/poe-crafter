@@ -1,0 +1,23 @@
+[other]
+craft_type=0
+aug_logic=0
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2
+[magic]
+0=[P][1] # Added Cold Damage with Sword Attacks(19)
+1=[P][1] # Added Fire Damage with Sword Attacks(21)
+2=[P][1] # Added Lightning Damage with Sword Attacks(25)
+3=[S][1] Adds # Cold Damage to Attacks(17)
+4=[S][1] Adds # Fire Damage to Attacks(19)
+5=[S][1] Adds # Lightning Damage to Attacks(22)
+6=[S][1] #% increased Attack Speed(4)
+7=[S][1] #% increased Attack Speed if you've dealt a Critical Strike Recently(6)
+8=[P][1] +# to maximum Life(36)
+9=[S][1] +#% to Global Critical Strike Multiplier(0)
+10=[P][1] +# to maximum Energy Shield(36)
+11=[S][1] Damage Penetrates 2% Elemental Resistances if you haven't Killed Recently
+12=[S][1] #% increased Critical Strike Chance if you haven't dealt a Critical Strike Recently(28)
+13=[S][1] #% increased Armour if you haven't Killed Recently(28)
+14=[S][1] +# to Accuracy Rating(241)

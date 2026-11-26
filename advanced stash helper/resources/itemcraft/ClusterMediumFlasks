@@ -1,0 +1,20 @@
+[magic]
+0=[P][1] 1 Added Passive Skill is Fasting
+1=[P][1] 1 Added Passive Skill is Brewed for Potency
+2=[P][1] 1 Added Passive Skill is Spiked Concoction
+3=[S][1] Added Small Passive Skills also grant: +# to Intelligence(6)
+4=[S][1] Added Small Passive Skills also grant: +# to All Attributes(4)
+[other]
+craft_type=0
+aug_logic=2
+aug_r_logic=1
+craft_logic=1
+weight_rare=2
+weight_magic=1
+[rare]
+0=[1] Added Small Passive Skills also grant: +# to All Attributes(4)
+1=[1] Added Small Passive Skills also grant: +# to Intelligence(6)
+2=[1] Added Small Passive Skills also grant: +# to Intelligence(8)
+3=[1] 1 Added Passive Skill is Fasting
+4=[1] 1 Added Passive Skill is Spiked Concoction
+5=[1] 1 Added Passive Skill is Brewed for Potency

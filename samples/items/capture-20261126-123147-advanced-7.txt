@@ -1,0 +1,42 @@
+Item Class: Thrusting One Hand Swords
+Rarity: Rare
+Horror Song
+Apex Rapier
+--------
+One Handed Sword
+Quality: +20% (augmented)
+Physical Damage: 29-67
+Elemental Damage: 12-24 (augmented)
+Critical Strike Chance: 8.09% (augmented)
+Attacks per Second: 1.69 (augmented)
+Weapon Range: 1.4 metres
+--------
+Requirements:
+Level: 70
+Dex: 176
+Int: 155
+--------
+Sockets: W-B-W 
+--------
+Item Level: 85
+--------
+Quality does not increase Physical Damage (enchant)
+1% increased Critical Strike Chance per 4% Quality (enchant)
+--------
+{ Implicit Modifier — Damage, Critical }
++35% to Global Critical Strike Multiplier
+--------
+{ Prefix Modifier "Essences" — Damage, Caster }
+90(83-94)% increased Spell Damage
+{ Prefix Modifier "Icy" (Tier: 8) — Damage, Elemental, Cold, Attack }
+Adds 12(11-15) to 24(23-26) Cold Damage
+{ Master Crafted Prefix Modifier "Upgraded" — Attack }
+Hits can't be Evaded — Unscalable Value
+{ Fractured Suffix Modifier "of Incision" (Tier: 1) — Attack, Critical }
+37(35-38)% increased Critical Strike Chance
+{ Suffix Modifier "of Fame" (Tier: 3) — Attack, Speed }
+21(20-22)% increased Attack Speed
+{ Suffix Modifier "of Destruction" (Tier: 1) — Damage, Critical }
++37(35-38)% to Global Critical Strike Multiplier
+--------
+Fractured Item

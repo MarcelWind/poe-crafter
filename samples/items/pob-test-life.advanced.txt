@@ -1,0 +1,5 @@
+Rarity: Rare
+Name
+Cord Belt
+{ Prefix Modifier "Fecund" (Tier: 1) — Life }
++142(130-144) to maximum Life

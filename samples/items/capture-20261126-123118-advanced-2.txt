@@ -1,0 +1,21 @@
+Item Class: Life Flasks
+Rarity: Magic
+Catalysed Eternal Life Flask of Sealing
+--------
+Quality: +28% (augmented)
+Recovers 2662 (augmented) Life over 1.20 (augmented) Seconds
+Consumes 15 of 45 Charges on use
+Currently has 45 Charges
+--------
+Requirements:
+Level: 65
+--------
+Item Level: 85
+--------
+{ Prefix Modifier "Catalysed" (Tier: 1) }
+68(65-70)% increased Recovery rate
+{ Suffix Modifier "of Sealing" (Tier: 4) }
+Grants Immunity to Bleeding for 6(6-8) seconds if used while Bleeding
+Grants Immunity to Corrupted Blood for 6(6-8) seconds if used while affected by Corrupted Blood
+--------
+Right click to drink. Can only hold charges while in belt. Refills as you kill monsters.

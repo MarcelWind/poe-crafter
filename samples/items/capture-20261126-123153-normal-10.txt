@@ -1,0 +1,10 @@
+Item Class: Stackable Currency
+Rarity: Currency
+Sacred Orb
+--------
+Stack Size: 68/10
+--------
+Randomises the numeric values of base defences on an armour
+--------
+Right click this item then left click an armour to apply it.
+Shift click to unstack.

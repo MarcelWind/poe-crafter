@@ -1,0 +1,5 @@
+Rarity: Rare
+Name
+Cord Belt
+{ Master Crafted Suffix Modifier "of Craft" (Rank: 3) — Elemental, Cold, Resistance }
++35(29-35)% to Cold Resistance

@@ -1,0 +1,17 @@
+[package]
+name = "poe-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "poe"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+poe-data = { path = "../poe-data" }
+poe-item = { path = "../poe-item" }
+serde.workspace = true
+serde_json.workspace = true

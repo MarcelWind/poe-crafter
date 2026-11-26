@@ -1,0 +1,10 @@
+Item Class: Stackable Currency
+Rarity: Currency
+Vaal Orb
+--------
+Stack Size: 367/20
+--------
+Corrupts an item, modifying it unpredictably
+--------
+Right click this item then left click an item to corrupt it. Corrupted items cannot be modified again.
+Shift click to unstack.

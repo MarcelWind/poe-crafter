@@ -1,0 +1,18 @@
+[magic]
+0=[P][2] Adds # Cold Damage(122)
+1=[P][2] Adds # Lightning Damage(130)
+2=[P][2] Adds # Fire Damage(134)
+3=[P][2] Adds # Physical Damage(33)
+4=[P][2] #% increased Physical Damage(155)
+5=[P][1] #% increased Physical Damage(65)
+6=[P][1] +# to Accuracy Rating(150)
+7=[S][2] #% increased Attack Speed(14)
+8=[S][2] #% increased Critical Strike Chance(35)
+9=[P][2] #% increased Elemental Damage with Attack Skills(43)
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=0
+weight_rare=0
+weight_magic=2

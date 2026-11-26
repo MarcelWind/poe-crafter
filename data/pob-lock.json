@@ -1,0 +1,345 @@
+{
+  "schema": 1,
+  "source": {
+    "repo": "https://github.com/PathOfBuildingCommunity/PathOfBuilding",
+    "ref": "dev",
+    "commit": "bfee69d10cceef87b7125155645b4d03091ac6ac",
+    "commit_date": "2026-11-26T02:29:40Z",
+    "raw_base": "https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/bfee69d10cceef87b7125155645b4d03091ac6ac",
+    "license": "MIT (Path of Building); game data (c) Grinding Gear Games"
+  },
+  "policy": {
+    "pinned": true,
+    "update": "manual; re-run tools/lock-pob-data.py against a reviewed commit",
+    "note": "No data files are redistributed in this repository; fetch by commit and verify sha256."
+  },
+  "fetched_at": "2026-11-26T11:46:07Z",
+  "excluded": [
+    "ModCache.lua",
+    "Gems.lua",
+    "Minions.lua",
+    "Spectres.lua",
+    "WorldAreas.lua",
+    "Bosses.lua",
+    "BossSkills.lua",
+    "BeastCraft.lua",
+    "Crucible.lua",
+    "DelveDropOnly.lua",
+    "IncursionDropOnly.lua",
+    "FlavourText.lua",
+    "Pantheons.lua",
+    "PearlSupports.lua",
+    "Rares.lua",
+    "SkillStatMap.lua",
+    "StatDescriptionFormatters.lua",
+    "TattooPassives.lua",
+    "Vestigial.lua",
+    "Viscera.lua",
+    "Misc.lua",
+    "ModFoulbornMap.lua",
+    "ModFoulbornMap.jsonc",
+    "Enchantment*.lua"
+  ],
+  "files": [
+    {
+      "path": "src/Data/Bases/amulet.lua",
+      "size": 84969,
+      "sha256": "8a1b934fbb7f3e8812d9edae2b0f8c85f440f68a597785c082d314b668e1022e",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/axe.lua",
+      "size": 37907,
+      "sha256": "1d6573566cba35388aa9f2f97282253cfc2cb7a6c901f1a4c6ea295385cf2cce",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/belt.lua",
+      "size": 7868,
+      "sha256": "e0d313cd1262123fa4bef0da9a5f1b7a0dc6c7b1a382431200f4aee8784c41a0",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/body.lua",
+      "size": 89713,
+      "sha256": "5c51c0cb85cc36f02ace0ee0783ba4053598683ba3daf2925f21e06d488f3fbd",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/boots.lua",
+      "size": 53967,
+      "sha256": "a79944cf6624971ebc276637a0ab8eda8d0208e83d049a837bec0724842395ed",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/bow.lua",
+      "size": 21005,
+      "sha256": "1d67834eee5d8ecb8408b40d6e47e0aaad1b9dc3e9019277289d9e2ea527e362",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/claw.lua",
+      "size": 22512,
+      "sha256": "b1b85b06e87ed11f079fefd90bcaacd8d48b8dabcb789ab005d7137924ea2077",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/dagger.lua",
+      "size": 27693,
+      "sha256": "cadf3b46d2b35f95307b9506b881a272a34a954d69573062fad76adf735eef6c",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/fishing.lua",
+      "size": 513,
+      "sha256": "6f759195f963a603e6a60bf01e5c96dd16c75a8be721449e28521b6fd97b8842",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/flask.lua",
+      "size": 16319,
+      "sha256": "886ed2ba70aefcf43050d308ac35d8cef27204a9bf1c03b3965c868cb73273fe",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/gloves.lua",
+      "size": 54077,
+      "sha256": "e88bf2ed0ae60118d2e97d635624a58c6828621320f1cb82716f7ed2633a2f3c",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/graft.lua",
+      "size": 6196,
+      "sha256": "4f1d79854092d9618c943ffbbb90909370b727d67ec81cbd889a991c61e4891a",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/helmet.lua",
+      "size": 63890,
+      "sha256": "b8780ca97b39b6b61bf36b3d10cbe2b0d20d83bfed9e8ebb4f2354ae9162e70a",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/jewel.lua",
+      "size": 4469,
+      "sha256": "a2fcee86b2ae2021ffcdf8e39c3d3c1912e11646bdb9b1d393995b8fe3724d09",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/mace.lua",
+      "size": 65824,
+      "sha256": "51107c40c5c712031b19755e1467224953c5e9ea5c0c4409cb9536fbd358d965",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/quiver.lua",
+      "size": 17400,
+      "sha256": "42c07d705694732bac2c5aec3870642db109e024c6fe4e561737b6df455b9dc6",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/ring.lua",
+      "size": 29607,
+      "sha256": "03d36af66b8e085c7572f44332891cdc235357217df7c1eed5424347b4b4150f",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/shield.lua",
+      "size": 79245,
+      "sha256": "833921204b47db6d2699d449b7a69fa0abec7a67593370319cc55bd735ca56ab",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/staff.lua",
+      "size": 23644,
+      "sha256": "ff6b714f24082bb437eedde4e5c524ecda963f0a641608a2695a5bf4af8f7f15",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/sword.lua",
+      "size": 69996,
+      "sha256": "d0c78f83769d91dc1e5f9bfa28b57e6310cfe26226f4ec2966076802df7655fb",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/tincture.lua",
+      "size": 5060,
+      "sha256": "e4000c70f75ce17e132c64ade1469ae20b2068c83ad47d62d0dec4c20b64742c",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/wand.lua",
+      "size": 23938,
+      "sha256": "4f5d59f006252d8fdfd72b7685b7fdb93960a6a9e949938bbfb39296a4ee42af",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Bases/wickerman.lua",
+      "size": 30261,
+      "sha256": "3bbe2721282e649aa181410d5d5b3f5eff84e4fd4f25e41896deb1a472346665",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ClusterJewels.lua",
+      "size": 35720,
+      "sha256": "9a86c4d1b7266c2348188931c5f54e327b881459310eb415b9e426c83fc1262b",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/Costs.lua",
+      "size": 1914,
+      "sha256": "bcf66c609ea8e56056d6c4d8f33e8dec44d2f0d4791e179877b6882545e045e0",
+      "purpose": "cost"
+    },
+    {
+      "path": "src/Data/CurrencyNames.lua",
+      "size": 39473,
+      "sha256": "fb38fa8e55338370aefb4f4567a4b4790471a3a0eb6b3ef1a2d2099375a8677f",
+      "purpose": "ui"
+    },
+    {
+      "path": "src/Data/Essence.lua",
+      "size": 119532,
+      "sha256": "75d5e8d5cee6c6d7136562519a51b1fa9c27187bebb07829b6525594bd114bf7",
+      "purpose": "essence"
+    },
+    {
+      "path": "src/Data/ModCorrupted.lua",
+      "size": 140754,
+      "sha256": "718cd2a87f8b5ab6063fbab886ccf7194f43911cd6059a4d2fafc688de58fead",
+      "purpose": "vaal"
+    },
+    {
+      "path": "src/Data/ModDelve.lua",
+      "size": 119422,
+      "sha256": "9d0e28ecd2238b98f54e16a9c104305bf3dfdbc4b58e9328c291b58d6a2d750e",
+      "purpose": "fossil"
+    },
+    {
+      "path": "src/Data/ModEldritch.lua",
+      "size": 1948218,
+      "sha256": "9423da3cacab4503df2f0b97c98357c03bbb78b9990592741825a265461c4f8f",
+      "purpose": "eldritch"
+    },
+    {
+      "path": "src/Data/ModExplicit.lua",
+      "size": 1956292,
+      "sha256": "df6143c0eedb7d0a95213466d78c4b3da4e14892fb99127c4b46162d6c2d982f",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ModFlask.lua",
+      "size": 108969,
+      "sha256": "7b0b5e63638aa0cffb5620b9a47896c51c884811b48fd22f0b46419086572403",
+      "purpose": "flask"
+    },
+    {
+      "path": "src/Data/ModFoulborn.lua",
+      "size": 136672,
+      "sha256": "fe0923afb1c050ecda86edc397ec2fc2e17a5f860f0673dbcdb803ce340836a4",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModGraft.lua",
+      "size": 201346,
+      "sha256": "95946f676924a37e5425d5f40175fd8db44b543e783618526546f6c669f87717",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModItemExclusive.lua",
+      "size": 3134126,
+      "sha256": "c8572e75c457101c9c19481bc6559f497d0c9890e59b3b7de697e9226c6a7313",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModJewel.lua",
+      "size": 177240,
+      "sha256": "8d847c9774fdcc8dc264f014bca7a6c8b422514b830f9eb4365030d30c4d674a",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ModJewelAbyss.lua",
+      "size": 361073,
+      "sha256": "01e390152c7c35d98efc40eda94db14a108ba235b903a8ab4beec85017835d08",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ModJewelCharm.lua",
+      "size": 106984,
+      "sha256": "43bd313f7157d6ace7b3604310c536682e5d68459c003576c859a17da1fd078b",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ModJewelCluster.lua",
+      "size": 330131,
+      "sha256": "5601f23a0a88aae879a3ae6d9fb6f18a06190ff88882d0a9a4a7859c23c92b8f",
+      "purpose": "mvp"
+    },
+    {
+      "path": "src/Data/ModMap.lua",
+      "size": 24130,
+      "sha256": "91b3fa5529f783936a0f868f80e268a9aa7f283544edc433ba7f8e10fe1ccc7f",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModMaster.lua",
+      "size": 268661,
+      "sha256": "71dbfdc4cb6c38bacb5c699682bdd0467c578ed92f323061a6793d49bc15bb9a",
+      "purpose": "bench"
+    },
+    {
+      "path": "src/Data/ModMercenary.lua",
+      "size": 11784,
+      "sha256": "3f40f73a7e8bad319e288bd009a674b08d1c2a51dcfe4cfa9f68e20793e06b34",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModNecropolis.lua",
+      "size": 21566,
+      "sha256": "85b33fc407297fc3f6f0b2985bf205eb9b25dce1aad191e65e39792fda96ceaf",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModScalability.lua",
+      "size": 1331814,
+      "sha256": "3c065b497bbbb687ae2a7b83e70feb62279c99e4da3160462efa03c6990389ef",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModScourge.lua",
+      "size": 508465,
+      "sha256": "0b2a79c4b4b362f8ac32222f23e7b2ab18371bbfe8a36c960016505bddf9b7d7",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModSynthesis.lua",
+      "size": 472110,
+      "sha256": "5f18ea246283bbf38f34016eeb7a69c66081bd518940b7bdceeaacfdd0468cc8",
+      "purpose": "later"
+    },
+    {
+      "path": "src/Data/ModTincture.lua",
+      "size": 27093,
+      "sha256": "29c162a97b058e3e61cd06ce46fb31a08edd745ab63ee15f657e52192d7be986",
+      "purpose": "tincture"
+    },
+    {
+      "path": "src/Data/ModVeiled.lua",
+      "size": 162603,
+      "sha256": "90561e0e032b1d059d0c452171ad01e56e8b52ba5215c164f671a994aaf8b809",
+      "purpose": "veiled"
+    },
+    {
+      "path": "src/Data/QueryMods.lua",
+      "size": 1417449,
+      "sha256": "b383a304ccd7c64d5efb804dac29ea906ef84c62ae26a131c3303d456b2b2f6c",
+      "purpose": "trade"
+    },
+    {
+      "path": "src/Data/TradeSiteStats.lua",
+      "size": 2832488,
+      "sha256": "c381e0f4b1424d2d2897c3a173ad1aace695f6bdf8f4e6e6bd0a469723fb91a2",
+      "purpose": "trade"
+    }
+  ]
+}

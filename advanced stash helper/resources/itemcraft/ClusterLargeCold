@@ -1,0 +1,33 @@
+[magic]
+0=[P][1] 1 Added Passive Skill is Blanketed Snow
+1=[P][1] 1 Added Passive Skill is Prismatic Heart
+2=[P][1] 1 Added Passive Skill is Corrosive Elements
+3=[P][1] 1 Added Passive Skill is Sadist
+4=[P][1] 1 Added Passive Skill is Snowstorm
+5=[P][1] 1 Added Passive Skill is Stormrider
+6=[S][1] 1 Added Passive Skill is Disorienting Display
+7=[S][1] 1 Added Passive Skill is Doryani's Lesson
+8=[S][1] 1 Added Passive Skill is Widespread Destruction
+9=[P][1] 1 Added Passive Skill is Inspired Oppression
+[other]
+craft_type=0
+aug_logic=1
+aug_r_logic=0
+craft_logic=1
+weight_rare=3
+weight_magic=2
+[rare]
+0=[2] 1 Added Passive Skill is Blanketed Snow
+1=[1] 1 Added Passive Skill is Prismatic Heart
+2=[1] 1 Added Passive Skill is Corrosive Elements
+3=[1] 1 Added Passive Skill is Inspired Oppression
+4=[1] 1 Added Passive Skill is Sadist
+5=[1] 1 Added Passive Skill is Snowstorm
+6=[1] 1 Added Passive Skill is Stormrider
+7=[1] 1 Added Passive Skill is Disorienting Display
+8=[2] 1 Added Passive Skill is Doryani's Lesson
+9=[1] 1 Added Passive Skill is Widespread Destruction
+10=[1] 1 Added Passive Skill is Blast-Freeze
+11=[1] 1 Added Passive Skill is Cold to the Core
+12=[1] 1 Added Passive Skill is Cold-Blooded Killer
+13=[1] 1 Added Passive Skill is Deep Chill

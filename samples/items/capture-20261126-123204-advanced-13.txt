@@ -1,0 +1,22 @@
+Item Class: Rings
+Rarity: Unique
+You cannot use this item. Its stats will be ignored
+--------
+Replica Voideye
+Unset Ring
+--------
+Requirements:
+Level: 45
+Str: 21
+--------
+Sockets: R 
+--------
+Item Level: 66
+--------
+{ Implicit Modifier }
+Has 1 Socket — Unscalable Value
+--------
+{ Unique Modifier — Gem }
++30% to Quality of Socketed Gems
+--------
+"So close, yet frustratingly distinct. Something more is going on here..."
