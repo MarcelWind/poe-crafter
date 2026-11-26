@@ -45,5 +45,15 @@ pub trait GameIo {
     /// Implementations must return the remaining stack to its slot.
     fn apply_currency(&mut self, currency: Currency) -> Result<(), IoError>;
 
+    /// Pick up a currency and hold Shift so the same stack stays available for
+    /// subsequent `use_currency` calls.
+    fn begin_currency(&mut self, currency: Currency) -> Result<(), IoError>;
+
+    /// Left-click the item once while a currency is held.
+    fn use_currency(&mut self) -> Result<(), IoError>;
+
+    /// Release Shift so the remaining held currency returns to its slot.
+    fn end_currency(&mut self) -> Result<(), IoError>;
+
     fn sleep(&mut self, millis: u64);
 }

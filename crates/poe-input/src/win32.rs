@@ -1,4 +1,5 @@
 use std::mem::{size_of, zeroed};
+use std::ptr::null_mut;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -7,23 +8,24 @@ use thiserror::Error;
 use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE};
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::um::handleapi::CloseHandle;
-use winapi::um::processthreadsapi::OpenProcess;
+use winapi::um::processthreadsapi::{GetCurrentThreadId, OpenProcess};
 use winapi::um::winbase::QueryFullProcessImageNameW;
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 use winapi::um::winuser::{
-    ClientToScreen, EnumWindows, GetAsyncKeyState, GetClientRect, GetCursorPos,
-    GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, SendInput,
-    SetCursorPos, SetProcessDPIAware, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEINPUT, VK_CONTROL, VK_F12, VK_F8, VK_MENU,
+    AttachThreadInput, BringWindowToTop, ClientToScreen, EnumWindows, GetAsyncKeyState,
+    GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, SendInput, SetCursorPos, SetForegroundWindow, SetProcessDPIAware,
+    ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_MENU, VK_SHIFT,
 };
 
 use crate::calibration::NormPoint;
 
 const WINDOW_TITLE_BUFFER: usize = 512;
 const VK_C_KEY: u32 = 0x43;
-const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(1_200);
-const CLIPBOARD_POLL: Duration = Duration::from_millis(40);
+const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(2_500);
+const CLIPBOARD_POLL: Duration = Duration::from_millis(60);
 
 #[derive(Debug, Error)]
 pub enum InputError {
@@ -109,6 +111,14 @@ pub struct Win32Game {
     title: String,
 }
 
+impl Drop for Win32Game {
+    fn drop(&mut self) {
+        // Best effort: never leave a synthetic Shift key held if a session exits
+        // while a currency stack is attached to the cursor.
+        let _ = send_key(VK_SHIFT as u32, true);
+    }
+}
+
 impl Win32Game {
     pub fn find(title_substring: &str) -> Result<Self, InputError> {
         unsafe {
@@ -161,6 +171,43 @@ impl Win32Game {
 
     pub fn emergency_stop(&self) -> bool {
         key_down(VK_F12)
+    }
+
+    /// Bring the game window to the foreground. The CLI process is normally the
+    /// foreground process when the user runs a command, so it may transfer
+    /// activation even when Windows would block a background process.
+    pub fn focus(&self) -> Result<(), InputError> {
+        unsafe {
+            if IsIconic(self.hwnd) != 0 {
+                ShowWindow(self.hwnd, SW_RESTORE);
+            }
+            if self.is_foreground() {
+                return Ok(());
+            }
+            let foreground = GetForegroundWindow();
+            let current_thread = GetCurrentThreadId();
+            let foreground_thread = if foreground.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(foreground, null_mut())
+            };
+            let attached = foreground_thread != 0
+                && foreground_thread != current_thread
+                && AttachThreadInput(current_thread, foreground_thread, TRUE) != 0;
+            BringWindowToTop(self.hwnd);
+            SetForegroundWindow(self.hwnd);
+            if attached {
+                AttachThreadInput(current_thread, foreground_thread, 0);
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self.is_foreground() {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(30));
+        }
+        Err(InputError::NotForeground)
     }
 
     pub fn capture_point(&mut self, timeout: Duration) -> Result<NormPoint, InputError> {
@@ -238,6 +285,36 @@ impl Win32Game {
         Ok(0)
     }
 
+    pub fn begin_hold(&mut self, currency_point: NormPoint) -> Result<(), InputError> {
+        self.require_foreground()?;
+        self.move_to(currency_point)?;
+        sleep(Duration::from_millis(100));
+        self.mouse_click(false)?;
+        sleep(Duration::from_millis(200));
+        send_key(VK_SHIFT as u32, false)?;
+        sleep(Duration::from_millis(100));
+        if self.emergency_stop() {
+            let _ = send_key(VK_SHIFT as u32, true);
+            return Err(InputError::Cancelled);
+        }
+        Ok(())
+    }
+
+    pub fn use_held(&mut self, item_point: NormPoint) -> Result<(), InputError> {
+        self.require_foreground()?;
+        self.move_to(item_point)?;
+        sleep(Duration::from_millis(100));
+        self.mouse_click(true)?;
+        sleep(Duration::from_millis(350));
+        Ok(())
+    }
+
+    pub fn end_hold(&mut self) -> Result<(), InputError> {
+        send_key(VK_SHIFT as u32, true)?;
+        sleep(Duration::from_millis(200));
+        Ok(())
+    }
+
     pub fn apply_currency(
         &mut self,
         currency_point: NormPoint,
@@ -256,27 +333,24 @@ impl Win32Game {
         item_point: NormPoint,
     ) -> Result<(), InputError> {
         self.move_to(currency_point)?;
-        sleep(Duration::from_millis(40));
+        sleep(Duration::from_millis(100));
         self.mouse_click(false)?;
-        sleep(Duration::from_millis(120));
+        sleep(Duration::from_millis(200));
         if self.emergency_stop() {
             return Err(InputError::Cancelled);
         }
 
         self.move_to(item_point)?;
-        sleep(Duration::from_millis(60));
+        sleep(Duration::from_millis(100));
         self.mouse_click(true)?;
-        sleep(Duration::from_millis(160));
+        sleep(Duration::from_millis(350));
         if self.emergency_stop() {
             return Err(InputError::Cancelled);
         }
 
-        // Return the remaining currency stack to its slot. If the stack was
-        // fully consumed this is a harmless click on an empty slot.
-        self.move_to(currency_point)?;
-        sleep(Duration::from_millis(40));
-        self.mouse_click(true)?;
-        sleep(Duration::from_millis(120));
+        // The game clears the held currency after applying it. Do not click the
+        // currency slot again: doing so picks the remaining stack back up and
+        // leaves it attached to the cursor.
         Ok(())
     }
 
@@ -315,7 +389,7 @@ impl Win32Game {
             return Err(InputError::PointOutsideWindow);
         }
         set_cursor(x, y)?;
-        sleep(Duration::from_millis(25));
+        sleep(Duration::from_millis(60));
         let current = cursor_pos()?;
         if current.x != x || current.y != y {
             return Err(InputError::Input(

@@ -216,7 +216,10 @@ mod tests {
 
     #[test]
     fn default_path_is_local() {
-        assert_eq!(Calibration::default_path(), PathBuf::from("calibration.toml"));
+        assert_eq!(
+            Calibration::default_path(),
+            PathBuf::from("calibration.toml")
+        );
     }
 
     #[test]

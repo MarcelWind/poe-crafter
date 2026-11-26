@@ -24,14 +24,25 @@ Before each action:
   sockets, and implicit modifier signature.
 - If currency verification is enabled, the currency stack must exist.
 
-After each currency application:
+After each item use while Shift is held:
 
-- The currency stack must decrease by exactly one.
 - The item must be re-read and still parse.
 - The item identity must be unchanged.
 - The item text fingerprint must change; if it does not, the run aborts after
   `max_same_fingerprint` repeats.
-- The goal is re-evaluated after every currency step.
+- The goal is re-evaluated after every use.
+
+When the held currency is released:
+
+- The currency count is read and compared with the starting count minus the
+  number of uses. Mismatches are warnings because currency-tab stacks can
+  reflow; if the item never changed and the stack did not decrease, the run
+  aborts.
+
+For the most reliable count verification, keep the calibrated currency stacks
+in the player inventory rather than a currency tab. Currency tabs can merge or
+move stacks while returning the remaining stack, making the count at the
+calibrated point ambiguous.
 
 Budgets:
 
@@ -80,35 +91,42 @@ poe craft doctor
 poe craft calibrate --list
 poe craft run --plan plans\es-boots-alt.toml --dry-run
 poe craft run --plan plans\es-boots-alt.toml --once
-poe craft run --plan plans\es-boots-alt.toml --yes --max-steps 1000
+poe craft run --plan plans\es-boots-alt.toml --max-steps 1000
 ```
 
-Real runs require typing `YES` unless `--yes` is passed. The CLI waits three
-seconds after confirmation so you can focus the game.
+Real runs start immediately. The CLI brings Path of Exile to the foreground
+automatically. Dry runs do the same before reading the item. If Windows blocks
+the focus change, focus the game manually and retry.
 
 `--dry-run` reads the current item, evaluates the goal, and prints the next
 action without clicking. It only requires the item slot calibration.
 
 Useful flags:
 
+- `--pre-delay-ms` (default 400) and `--action-delay-ms` (default 800) slow
+  down interaction and give the game time to update.
 - `--max-seconds` and `--max-cost` bound a run.
 - `--no-currency-verify` disables stack-count checks; item text is still
   verified, but this is less safe.
+- `--no-hold-currency` re-picks the currency for every use instead of holding
+  Shift.
 - `--json` prints the final session report as JSON.
 
 ## Currency interaction
 
-For each action the tool:
+By default the tool uses the Shift technique:
 
-1. Reads the item and the currency stack.
-2. Right-clicks the currency, then left-clicks the item.
-3. Left-clicks the currency slot again to return the remaining stack.
-4. Re-reads the currency stack and the item, then verifies both.
+1. Reads the currency stack and right-clicks it.
+2. Holds Shift so the same stack stays on the cursor.
+3. Left-clicks the item once per use, reading and verifying the item after each
+   click while Shift remains held.
+4. Releases Shift on goal/stop/error so the remaining stack returns to its slot.
+5. Re-reads the currency count after release and reports any mismatch.
 
-The return click assumes the game keeps the remaining stack on the cursor after
-applying one, which is the normal PoE behavior. If the stack is fully consumed,
-the return click lands on an empty slot and is a no-op. Validate the interaction
-with `--once` before a long run.
+No extra click is sent to the currency slot after applying. Clicking it again
+would pick the remaining stack back up and leave it attached to the cursor.
+Use `--no-hold-currency` to fall back to re-picking the currency for every use.
+Validate the interaction with `--once` before a long run.
 
 ## Emergency stop and failure behavior
 

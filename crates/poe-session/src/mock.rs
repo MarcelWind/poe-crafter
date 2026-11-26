@@ -11,9 +11,11 @@ pub struct MockGame {
     pub foreground: bool,
     pub emergency: bool,
     pub consume_currency: bool,
+    pub currency_drop: u32,
     pub lose_foreground_after: Option<usize>,
     pub emergency_after: Option<usize>,
     pub applied: Vec<Currency>,
+    held_currency: Option<Currency>,
 }
 
 impl MockGame {
@@ -29,9 +31,11 @@ impl MockGame {
             foreground: true,
             emergency: false,
             consume_currency: true,
+            currency_drop: 1,
             lose_foreground_after: None,
             emergency_after: None,
             applied: Vec::new(),
+            held_currency: None,
         }
     }
 }
@@ -66,7 +70,7 @@ impl GameIo for MockGame {
         self.applied.push(currency);
         if self.consume_currency {
             if let Some(count) = self.currencies.get_mut(&currency) {
-                *count = count.saturating_sub(1);
+                *count = count.saturating_sub(self.currency_drop);
             }
             if let Some(next) = self.next_items.pop_front() {
                 self.current = next;
@@ -84,6 +88,23 @@ impl GameIo for MockGame {
         {
             self.emergency = true;
         }
+        Ok(())
+    }
+
+    fn begin_currency(&mut self, currency: Currency) -> Result<(), IoError> {
+        self.held_currency = Some(currency);
+        Ok(())
+    }
+
+    fn use_currency(&mut self) -> Result<(), IoError> {
+        let Some(currency) = self.held_currency else {
+            return Ok(());
+        };
+        self.apply_currency(currency)
+    }
+
+    fn end_currency(&mut self) -> Result<(), IoError> {
+        self.held_currency = None;
         Ok(())
     }
 

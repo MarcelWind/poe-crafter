@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -92,11 +91,14 @@ enum CraftCommand {
         /// Stop after one plan step.
         #[arg(long)]
         once: bool,
-        /// Skip the interactive confirmation prompt.
-        #[arg(long)]
-        yes: bool,
         #[arg(long, default_value_t = 10_000)]
         max_steps: u32,
+        /// Delay before a currency action, in milliseconds.
+        #[arg(long, default_value_t = 400)]
+        pre_delay_ms: u64,
+        /// Delay after a currency action before verification, in milliseconds.
+        #[arg(long, default_value_t = 800)]
+        action_delay_ms: u64,
         #[arg(long, default_value_t = 3_600)]
         max_seconds: u64,
         #[arg(long)]
@@ -106,6 +108,9 @@ enum CraftCommand {
         /// Disable currency count verification (item text is still checked).
         #[arg(long)]
         no_currency_verify: bool,
+        /// Re-pick the currency for every use instead of holding Shift.
+        #[arg(long)]
+        no_hold_currency: bool,
         #[arg(long)]
         json: bool,
     },
@@ -222,12 +227,14 @@ fn main() -> Result<()> {
                 calibration,
                 dry_run,
                 once,
-                yes,
                 max_steps,
+                pre_delay_ms,
+                action_delay_ms,
                 max_seconds,
                 max_cost,
                 log_dir,
                 no_currency_verify,
+                no_hold_currency,
                 json,
             } => craft_run(CraftRunArgs {
                 cache: &cache,
@@ -235,12 +242,14 @@ fn main() -> Result<()> {
                 calibration: calibration.as_deref(),
                 dry_run,
                 once,
-                yes,
                 max_steps,
+                pre_delay_ms,
+                action_delay_ms,
                 max_seconds,
                 max_cost,
                 log_dir: &log_dir,
                 verify_currency: !no_currency_verify,
+                hold_currency: !no_hold_currency,
                 json,
             }),
         },
@@ -757,12 +766,14 @@ struct CraftRunArgs<'a> {
     calibration: Option<&'a Path>,
     dry_run: bool,
     once: bool,
-    yes: bool,
     max_steps: u32,
+    pre_delay_ms: u64,
+    action_delay_ms: u64,
     max_seconds: u64,
     max_cost: Option<f64>,
     log_dir: &'a Path,
     verify_currency: bool,
+    hold_currency: bool,
     json: bool,
 }
 
@@ -888,9 +899,6 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     }
 
     let game = Win32Game::find(&calibration.game_title).context("finding game window")?;
-    if !game.is_foreground() {
-        println!("Game is not foreground; focus Path of Exile before starting.");
-    }
     let mut io = WindowsGameIo { game, calibration };
 
     let max_steps = if args.once || args.dry_run {
@@ -904,13 +912,17 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
         max_seconds: args.max_seconds,
         max_cost: args.max_cost,
         max_same_fingerprint: 3,
-        pre_action_delay_ms: 100,
-        action_delay_ms: 250,
+        pre_action_delay_ms: args.pre_delay_ms,
+        action_delay_ms: args.action_delay_ms,
         verify_currency: args.verify_currency,
+        hold_currency: args.hold_currency,
         require_foreground: true,
     };
 
     if args.dry_run {
+        io.game
+            .focus()
+            .context("bringing Path of Exile to the foreground")?;
         let mut session =
             CraftSession::new(plan, &data, &mut io, config, None).context("creating session")?;
         let preview = session.preview().context("reading current item")?;
@@ -922,16 +934,11 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     println!(
         "Emergency stop: F12. Keep the stash/inventory open and the item in the calibrated slot."
     );
-    if !args.yes && !confirm_start()? {
-        println!("cancelled");
-        return Ok(());
-    }
-
-    println!("Focus Path of Exile; starting in 3 seconds.");
-    std::thread::sleep(Duration::from_secs(3));
+    println!("Bringing Path of Exile to the foreground...");
     io.game
-        .require_foreground()
-        .context("Path of Exile is not foreground")?;
+        .focus()
+        .context("bringing Path of Exile to the foreground")?;
+    std::thread::sleep(Duration::from_millis(250));
 
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1027,14 +1034,9 @@ fn print_session_report(report: &poe_session::SessionReport) {
     if let Some(path) = &report.log_path {
         println!("Log: {}", path.display());
     }
-}
-
-fn confirm_start() -> Result<bool> {
-    print!("Type YES to start: ");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().eq_ignore_ascii_case("yes"))
+    for warning in &report.warnings {
+        println!("Warning: {warning}");
+    }
 }
 
 struct WindowsGameIo {
@@ -1087,6 +1089,26 @@ impl GameIo for WindowsGameIo {
             .item
             .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
         self.game.apply_currency(point, item).map_err(map_input)
+    }
+
+    fn begin_currency(&mut self, currency: Currency) -> std::result::Result<(), IoError> {
+        let point = self
+            .calibration
+            .point(currency.key())
+            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
+        self.game.begin_hold(point).map_err(map_input)
+    }
+
+    fn use_currency(&mut self) -> std::result::Result<(), IoError> {
+        let item = self
+            .calibration
+            .item
+            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
+        self.game.use_held(item).map_err(map_input)
+    }
+
+    fn end_currency(&mut self) -> std::result::Result<(), IoError> {
+        self.game.end_hold().map_err(map_input)
     }
 
     fn sleep(&mut self, millis: u64) {

@@ -26,6 +26,7 @@ pub struct SessionConfig {
     pub pre_action_delay_ms: u64,
     pub action_delay_ms: u64,
     pub verify_currency: bool,
+    pub hold_currency: bool,
     pub require_foreground: bool,
 }
 
@@ -40,6 +41,7 @@ impl Default for SessionConfig {
             pre_action_delay_ms: 100,
             action_delay_ms: 250,
             verify_currency: true,
+            hold_currency: true,
             require_foreground: true,
         }
     }
@@ -87,6 +89,7 @@ pub struct SessionReport {
     pub final_item: ParsedItem,
     pub final_evaluation: GoalEvaluation,
     pub log_path: Option<PathBuf>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Error)]
@@ -101,6 +104,12 @@ pub enum SessionError {
     CurrencyMissing { currency: Currency },
     #[error("currency `{currency}` was not consumed (before {before}, after {after})")]
     CurrencyNotConsumed {
+        currency: Currency,
+        before: u32,
+        after: u32,
+    },
+    #[error("currency `{currency}` count changed unexpectedly (before {before}, after {after})")]
+    CurrencyCountMismatch {
         currency: Currency,
         before: u32,
         after: u32,
@@ -152,6 +161,7 @@ struct SessionEvent {
     after_text: String,
     currency_before: Option<u32>,
     currency_after: Option<u32>,
+    warning: Option<String>,
     evaluation: GoalEvaluation,
     elapsed_seconds: f64,
 }
@@ -189,12 +199,21 @@ impl SessionLogger {
     }
 }
 
+struct HeldCurrency {
+    currency: Currency,
+    count_before: Option<u32>,
+    uses: u32,
+    last_item_changed: Option<bool>,
+}
+
 pub struct CraftSession<'a> {
     plan: Plan,
     resolver: Resolver<'a>,
     io: &'a mut dyn GameIo,
     config: SessionConfig,
     logger: Option<SessionLogger>,
+    warnings: Vec<String>,
+    held: Option<HeldCurrency>,
 }
 
 impl<'a> CraftSession<'a> {
@@ -213,6 +232,8 @@ impl<'a> CraftSession<'a> {
             io,
             config,
             logger,
+            warnings: Vec::new(),
+            held: None,
         })
     }
 
@@ -230,6 +251,22 @@ impl<'a> CraftSession<'a> {
     }
 
     pub fn run(&mut self) -> Result<SessionReport, SessionError> {
+        let result = self.run_inner();
+        let cleanup = self.end_held();
+        match result {
+            Ok(mut report) => {
+                cleanup?;
+                report.warnings = self.warnings.clone();
+                Ok(report)
+            }
+            Err(error) => {
+                let _ = cleanup;
+                Err(error)
+            }
+        }
+    }
+
+    fn run_inner(&mut self) -> Result<SessionReport, SessionError> {
         let start = Instant::now();
         self.check_gate()?;
         let mut current = self.read_snapshot()?;
@@ -307,6 +344,106 @@ impl<'a> CraftSession<'a> {
 
             steps += 1;
 
+            if self.config.hold_currency && currencies.len() == 1 {
+                let currency = currencies[0];
+                if currency_actions >= self.config.max_currency_actions {
+                    return Ok(self.report(
+                        false,
+                        StopReason::MaxCurrencyActions,
+                        start,
+                        steps,
+                        currency_actions,
+                        currency_used,
+                        &current,
+                    ));
+                }
+                let before_text = current.text.clone();
+                let before_fingerprint = current_fingerprint;
+                self.begin_held(currency)?;
+                self.wait(self.config.pre_action_delay_ms)?;
+                self.use_held()?;
+                self.wait(self.config.action_delay_ms)?;
+
+                let after = self.read_snapshot()?;
+                if after.identity != current.identity {
+                    return Err(SessionError::ItemChanged);
+                }
+                let after_fingerprint = fingerprint(&after.text);
+                let item_changed = after_fingerprint != before_fingerprint;
+                if let Some(held) = self.held.as_mut() {
+                    held.last_item_changed = Some(item_changed);
+                }
+                if item_changed {
+                    same_fingerprint = 0;
+                } else {
+                    same_fingerprint += 1;
+                    if same_fingerprint >= self.config.max_same_fingerprint {
+                        return Err(SessionError::NoProgress {
+                            count: same_fingerprint,
+                        });
+                    }
+                }
+
+                currency_actions += 1;
+                *currency_used.entry(currency.key().to_string()).or_insert(0) += 1;
+                total_cost += currency.cost(&self.plan.costs);
+
+                if let Some(logger) = self.logger.as_mut() {
+                    logger.write_event(&SessionEvent {
+                        step: steps,
+                        action: currency_actions,
+                        currency: currency.key().to_string(),
+                        before_text,
+                        after_text: after.text.clone(),
+                        currency_before: None,
+                        currency_after: None,
+                        warning: None,
+                        evaluation: after.evaluation.clone(),
+                        elapsed_seconds: start.elapsed().as_secs_f64(),
+                    })?;
+                }
+
+                current = after;
+                current_fingerprint = after_fingerprint;
+
+                if !item_changed {
+                    // An unchanged item may be a valid same-text reroll or a
+                    // missed click. Release the stack now so the count can
+                    // distinguish the two before continuing.
+                    self.end_held()?;
+                }
+
+                if current.evaluation.satisfied {
+                    return Ok(self.report(
+                        true,
+                        StopReason::GoalReached,
+                        start,
+                        steps,
+                        currency_actions,
+                        currency_used,
+                        &current,
+                    ));
+                }
+                if self
+                    .config
+                    .max_cost
+                    .is_some_and(|limit| total_cost >= limit)
+                {
+                    return Ok(self.report(
+                        false,
+                        StopReason::CostBudget,
+                        start,
+                        steps,
+                        currency_actions,
+                        currency_used,
+                        &current,
+                    ));
+                }
+                continue;
+            }
+
+            self.end_held()?;
+
             for currency in currencies {
                 self.check_gate()?;
                 if currency_actions >= self.config.max_currency_actions {
@@ -341,30 +478,48 @@ impl<'a> CraftSession<'a> {
                 } else {
                     None
                 };
-                if let (Some(before), Some(after)) = (currency_before, currency_after) {
-                    if after.checked_add(1) != Some(before) {
-                        return Err(SessionError::CurrencyNotConsumed {
-                            currency,
-                            before,
-                            after,
-                        });
-                    }
-                }
 
                 let after = self.read_snapshot()?;
                 if after.identity != current.identity {
                     return Err(SessionError::ItemChanged);
                 }
                 let after_fingerprint = fingerprint(&after.text);
-                if after_fingerprint == before_fingerprint {
+                let item_changed = after_fingerprint != before_fingerprint;
+                let mut warning = None;
+                if let (Some(before), Some(after_count)) = (currency_before, currency_after) {
+                    let exact = after_count.checked_add(1) == Some(before);
+                    if !exact {
+                        if item_changed {
+                            let message = format!(
+                                "{} count changed {before} -> {after_count} for one item change; possible stack reflow"
+                            , currency);
+                            self.warnings.push(message.clone());
+                            warning = Some(message);
+                        } else if after_count >= before {
+                            return Err(SessionError::CurrencyNotConsumed {
+                                currency,
+                                before,
+                                after: after_count,
+                            });
+                        } else {
+                            return Err(SessionError::CurrencyCountMismatch {
+                                currency,
+                                before,
+                                after: after_count,
+                            });
+                        }
+                    }
+                }
+
+                if item_changed {
+                    same_fingerprint = 0;
+                } else {
                     same_fingerprint += 1;
                     if same_fingerprint >= self.config.max_same_fingerprint {
                         return Err(SessionError::NoProgress {
                             count: same_fingerprint,
                         });
                     }
-                } else {
-                    same_fingerprint = 0;
                 }
 
                 currency_actions += 1;
@@ -380,6 +535,7 @@ impl<'a> CraftSession<'a> {
                         after_text: after.text.clone(),
                         currency_before,
                         currency_after,
+                        warning: warning.clone(),
                         evaluation: after.evaluation.clone(),
                         elapsed_seconds: start.elapsed().as_secs_f64(),
                     })?;
@@ -416,6 +572,82 @@ impl<'a> CraftSession<'a> {
                 }
             }
         }
+    }
+
+    fn begin_held(&mut self, currency: Currency) -> Result<(), SessionError> {
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|held| held.currency == currency)
+        {
+            return Ok(());
+        }
+        self.end_held()?;
+        let count_before = if self.config.verify_currency {
+            Some(self.io.read_currency(currency)?)
+        } else {
+            None
+        };
+        if count_before == Some(0) {
+            return Err(SessionError::CurrencyMissing { currency });
+        }
+        self.held = Some(HeldCurrency {
+            currency,
+            count_before,
+            uses: 0,
+            last_item_changed: None,
+        });
+        if let Err(error) = self.io.begin_currency(currency) {
+            let _ = self.end_held();
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn use_held(&mut self) -> Result<(), SessionError> {
+        if self.held.is_none() {
+            return Err(SessionError::InvalidConfig(
+                "held currency was not initialized".to_string(),
+            ));
+        }
+        self.io.use_currency()?;
+        if let Some(held) = self.held.as_mut() {
+            held.uses = held.uses.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    fn end_held(&mut self) -> Result<(), SessionError> {
+        let Some(held) = self.held.take() else {
+            return Ok(());
+        };
+        self.io.end_currency()?;
+        if let Some(before) = held.count_before {
+            let after = self.io.read_currency(held.currency)?;
+            let expected = before.saturating_sub(held.uses);
+            if after != expected {
+                if held.last_item_changed == Some(false) {
+                    return Err(if after >= before {
+                        SessionError::CurrencyNotConsumed {
+                            currency: held.currency,
+                            before,
+                            after,
+                        }
+                    } else {
+                        SessionError::CurrencyCountMismatch {
+                            currency: held.currency,
+                            before,
+                            after,
+                        }
+                    });
+                }
+                self.warnings.push(format!(
+                    "{} count changed {before} -> {after} after {} uses",
+                    held.currency, held.uses
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn read_snapshot(&mut self) -> Result<Snapshot, SessionError> {
@@ -515,6 +747,7 @@ impl<'a> CraftSession<'a> {
                 .logger
                 .as_ref()
                 .map(|logger| logger.path().to_path_buf()),
+            warnings: self.warnings.clone(),
         }
     }
 }
@@ -625,6 +858,7 @@ transmute = 0.01
             pre_action_delay_ms: 0,
             action_delay_ms: 0,
             verify_currency: true,
+            hold_currency: true,
             require_foreground: true,
         }
     }
@@ -733,6 +967,73 @@ transmute = 0.01
         assert_eq!(report.stop_reason, StopReason::MaxSteps);
         assert_eq!(report.steps, 2);
         assert_eq!(game.applied.len(), 2);
+    }
+
+    #[test]
+    fn applies_currency_with_held_shift_stack() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(10));
+        let mut config = config();
+        config.hold_currency = true;
+        let report = CraftSession::new(plan(), &data, &mut game, config, None)
+            .unwrap()
+            .run()
+            .unwrap();
+        assert!(report.success);
+        assert_eq!(report.currency_used.get("alt"), Some(&1));
+        assert_eq!(game.applied, vec![Currency::Alt]);
+        assert_eq!(game.currencies.get(&Currency::Alt), Some(&9));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn held_currency_is_reused_across_uses() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![no_life(), with_life()], currencies(10));
+        let mut config = config();
+        config.hold_currency = true;
+        let report = CraftSession::new(plan(), &data, &mut game, config, None)
+            .unwrap()
+            .run()
+            .unwrap();
+        assert!(report.success);
+        assert_eq!(report.currency_used.get("alt"), Some(&2));
+        assert_eq!(game.applied, vec![Currency::Alt, Currency::Alt]);
+        assert_eq!(game.currencies.get(&Currency::Alt), Some(&8));
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn warns_but_continues_when_count_mismatch_has_item_change() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(100));
+        game.currency_drop = 31;
+        let report = session(&data, &mut game).run().unwrap();
+        assert!(report.success);
+        assert!(!report.warnings.is_empty());
+        assert_eq!(report.currency_used.get("alt"), Some(&1));
+    }
+
+    #[test]
+    fn warns_when_count_is_unchanged_but_item_changed() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(100));
+        game.currency_drop = 0;
+        let report = session(&data, &mut game).run().unwrap();
+        assert!(report.success);
+        assert!(!report.warnings.is_empty());
+    }
+
+    #[test]
+    fn rejects_count_mismatch_without_item_change() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![no_life()], currencies(100));
+        game.currency_drop = 31;
+        let result = session(&data, &mut game).run();
+        assert!(matches!(
+            result,
+            Err(SessionError::CurrencyCountMismatch { .. })
+        ));
     }
 
     #[test]
