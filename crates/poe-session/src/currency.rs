@@ -67,6 +67,7 @@ pub fn currencies_for(action: NextAction) -> Vec<Currency> {
         NextAction::Regal => vec![Currency::Regal],
         NextAction::Alch => vec![Currency::Alch],
         NextAction::Chaos => vec![Currency::Chaos],
+        NextAction::Scour => vec![Currency::Scour],
         NextAction::ScourAlch => vec![Currency::Scour, Currency::Alch],
         NextAction::ScourTransmute => vec![Currency::Scour, Currency::Transmute],
     }

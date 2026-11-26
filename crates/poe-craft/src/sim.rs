@@ -7,9 +7,14 @@ use thiserror::Error;
 
 use poe_data::PobData;
 
-use crate::eval::{evaluate, GoalEvaluation};
-use crate::plan::{AugmentMode, Costs, Method, Plan, StartRarity};
+use crate::build::{BuildError, BuildPlan, OnFail, StepAction};
+use crate::eval::evaluate;
+use crate::eval::GoalEvaluation;
+use crate::plan::{AugmentMode, Costs, Goal, Method, Plan, StartRarity};
 use crate::pool::{Pool, PoolError};
+use crate::probability::{
+    attempts_for_confidence, expected_attempts, EstimateSource, StepEstimate,
+};
 use crate::state::{CraftRarity, ItemState, StateMod};
 use poe_timing::Rng;
 
@@ -17,6 +22,8 @@ use poe_timing::Rng;
 pub enum SimError {
     #[error(transparent)]
     Pool(#[from] PoolError),
+    #[error(transparent)]
+    Build(#[from] BuildError),
     #[error("invalid simulation: {0}")]
     Invalid(String),
 }
@@ -80,6 +87,7 @@ pub enum NextAction {
     Regal,
     Alch,
     Chaos,
+    Scour,
     ScourAlch,
     ScourTransmute,
 }
@@ -94,6 +102,7 @@ impl std::fmt::Display for NextAction {
             NextAction::Regal => "regal",
             NextAction::Alch => "alchemy",
             NextAction::Chaos => "chaos",
+            NextAction::Scour => "scour",
             NextAction::ScourAlch => "scour + alchemy",
             NextAction::ScourTransmute => "scour + transmute",
         };
@@ -177,6 +186,585 @@ pub struct SimulationReport {
     pub mean_currency_success: Option<BTreeMap<String, f64>>,
 }
 
+/// Shared weighted roller used by legacy simulation, step simulation, and tests.
+pub struct PoolRoller<'a> {
+    pub pool: &'a Pool,
+}
+
+impl<'a> PoolRoller<'a> {
+    pub fn new(pool: &'a Pool) -> Self {
+        Self { pool }
+    }
+
+    pub fn roll_magic(&self, rng: &mut Rng, two_mod_chance: f64) -> Option<ItemState> {
+        let count = if rng.chance(two_mod_chance) { 2 } else { 1 };
+        self.roll_magic_count(rng, count)
+    }
+
+    pub fn roll_magic_count(&self, rng: &mut Rng, count: usize) -> Option<ItemState> {
+        let mut state = ItemState::new(CraftRarity::Magic, Some(self.pool.item_level));
+        let mut used = [""; 6];
+        let mut used_count = 0usize;
+        let mut produced = 0usize;
+        for _ in 0..count {
+            let Some(slot) = self.pool.choose_slot(
+                rng,
+                &used[..used_count],
+                state.open_prefixes(),
+                state.open_suffixes(),
+            ) else {
+                break;
+            };
+            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
+                break;
+            };
+            if used_count < used.len() {
+                used[used_count] = pool_mod.group.as_str();
+                used_count += 1;
+            }
+            state.mods.push(pool_mod.roll_state(rng));
+            produced += 1;
+        }
+        if produced == 0 {
+            None
+        } else {
+            Some(state)
+        }
+    }
+
+    pub fn roll_rare_count(&self, rng: &mut Rng, count: usize) -> ItemState {
+        let mut state = ItemState::new(CraftRarity::Rare, Some(self.pool.item_level));
+        let mut used = [""; 6];
+        let mut used_count = 0usize;
+        for _ in 0..count {
+            let Some(slot) = self.pool.choose_slot(
+                rng,
+                &used[..used_count],
+                state.open_prefixes(),
+                state.open_suffixes(),
+            ) else {
+                break;
+            };
+            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
+                break;
+            };
+            if used_count < used.len() {
+                used[used_count] = pool_mod.group.as_str();
+                used_count += 1;
+            }
+            state.mods.push(pool_mod.roll_state(rng));
+        }
+        state
+    }
+
+    pub fn add_mod(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
+        let (used, used_count) = used_groups(state);
+        let slot = self.pool.choose_slot(
+            rng,
+            &used[..used_count],
+            state.open_prefixes(),
+            state.open_suffixes(),
+        )?;
+        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
+        Some(pool_mod.roll_state(rng))
+    }
+
+    pub fn regal(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
+        let (used, used_count) = used_groups(state);
+        let open_prefixes = 3u8.saturating_sub(state.prefix_count());
+        let open_suffixes = 3u8.saturating_sub(state.suffix_count());
+        let slot = self
+            .pool
+            .choose_slot(rng, &used[..used_count], open_prefixes, open_suffixes)?;
+        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
+        state.rarity = CraftRarity::Rare;
+        Some(pool_mod.roll_state(rng))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepTransition {
+    Stayed,
+    Advanced,
+    Finished,
+    Failed,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StepRunner {
+    pub current_step: usize,
+    pub attempts_in_step: u32,
+    pub pending_reset: bool,
+    pub finished: bool,
+    pub failed: Option<String>,
+}
+
+impl StepRunner {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn target_goal<'a>(&self, plan: &'a BuildPlan) -> Option<&'a Goal> {
+        plan.steps
+            .get(self.current_step)
+            .and_then(|step| step.goal.as_ref())
+    }
+
+    pub fn observe(&mut self, plan: &BuildPlan, state: &ItemState) {
+        while !self.finished && self.failed.is_none() {
+            if self.pending_reset && state.rarity == CraftRarity::Normal {
+                self.pending_reset = false;
+                self.current_step = 0;
+                self.attempts_in_step = 0;
+            }
+            let Some(step) = plan.steps.get(self.current_step) else {
+                self.finished = true;
+                return;
+            };
+            if step
+                .goal
+                .as_ref()
+                .is_some_and(|goal| evaluate(goal, state).satisfied)
+            {
+                self.advance();
+            } else {
+                return;
+            }
+        }
+    }
+
+    fn advance(&mut self) {
+        self.current_step += 1;
+        self.attempts_in_step = 0;
+    }
+
+    fn apply_on_fail(&mut self, plan: &BuildPlan, state: &ItemState, on_fail: OnFail) {
+        match on_fail {
+            OnFail::Restart => {
+                self.current_step = 0;
+                self.attempts_in_step = 0;
+                if state.rarity != CraftRarity::Normal {
+                    self.pending_reset = true;
+                }
+            }
+            OnFail::Continue => {
+                self.advance();
+                if self.current_step >= plan.steps.len() {
+                    let name = plan
+                        .steps
+                        .get(self.current_step.saturating_sub(1))
+                        .map(|step| step.name.as_str())
+                        .unwrap_or("final step");
+                    self.failed = Some(format!(
+                        "final step `{name}` did not meet its goal after on_fail=continue"
+                    ));
+                }
+            }
+            OnFail::Abort => {
+                let name = plan
+                    .steps
+                    .get(self.current_step)
+                    .map(|step| step.name.as_str())
+                    .unwrap_or("step");
+                self.failed = Some(format!("step `{name}` failed"));
+            }
+        }
+    }
+
+    /// Advance/fail after a currency action has been applied.
+    pub fn after_action(
+        &mut self,
+        plan: &BuildPlan,
+        state: &ItemState,
+        primary: bool,
+    ) -> StepTransition {
+        if primary {
+            self.attempts_in_step = self.attempts_in_step.saturating_add(1);
+        }
+        if self.failed.is_some() {
+            return StepTransition::Failed;
+        }
+        if self.pending_reset && state.rarity == CraftRarity::Normal {
+            self.pending_reset = false;
+            self.current_step = 0;
+            self.attempts_in_step = 0;
+        }
+        let Some(step) = plan.steps.get(self.current_step) else {
+            self.finished = true;
+            return StepTransition::Finished;
+        };
+        let accepted = step.goal.is_none()
+            || step
+                .goal
+                .as_ref()
+                .is_some_and(|goal| evaluate(goal, state).satisfied);
+        if accepted {
+            self.advance();
+            if self.current_step >= plan.steps.len() {
+                self.finished = true;
+                StepTransition::Finished
+            } else {
+                StepTransition::Advanced
+            }
+        } else if !step.action.is_loop()
+            || step
+                .max_attempts
+                .is_some_and(|limit| self.attempts_in_step >= limit)
+        {
+            let on_fail = step.on_fail;
+            self.apply_on_fail(plan, state, on_fail);
+            if self.failed.is_some() {
+                StepTransition::Failed
+            } else {
+                StepTransition::Stayed
+            }
+        } else {
+            StepTransition::Stayed
+        }
+    }
+
+    /// Return the next currency action for the current item state.
+    pub fn next_action(&mut self, plan: &BuildPlan, state: &ItemState) -> NextAction {
+        let guard = plan.steps.len().saturating_add(4);
+        for _ in 0..guard {
+            self.observe(plan, state);
+            if self.finished || self.failed.is_some() {
+                return NextAction::Stop;
+            }
+            if self.pending_reset {
+                if state.rarity == CraftRarity::Normal {
+                    self.pending_reset = false;
+                    self.current_step = 0;
+                    self.attempts_in_step = 0;
+                } else {
+                    return NextAction::Scour;
+                }
+            }
+            let Some(step) = plan.steps.get(self.current_step) else {
+                self.finished = true;
+                return NextAction::Stop;
+            };
+            let action = step.action;
+            let on_fail = step.on_fail;
+            let augment = step.augment;
+            let decision = match action {
+                StepAction::Transmute => {
+                    (state.rarity == CraftRarity::Normal).then_some(NextAction::Transmute)
+                }
+                StepAction::Alt => match state.rarity {
+                    CraftRarity::Normal => Some(NextAction::Transmute),
+                    CraftRarity::Magic => Some(NextAction::Alt),
+                    _ => Some(NextAction::Scour),
+                },
+                StepAction::AltAug => match state.rarity {
+                    CraftRarity::Normal => Some(NextAction::Transmute),
+                    CraftRarity::Magic => {
+                        let can_augment = state.open_prefixes() > 0 || state.open_suffixes() > 0;
+                        let should_augment = can_augment
+                            && match augment {
+                                AugmentMode::Never => false,
+                                AugmentMode::Always => true,
+                                AugmentMode::IfNeeded => step
+                                    .goal
+                                    .as_ref()
+                                    .is_some_and(|goal| evaluate(goal, state).score > 0),
+                            };
+                        Some(if should_augment {
+                            NextAction::Augment
+                        } else {
+                            NextAction::Alt
+                        })
+                    }
+                    _ => Some(NextAction::Scour),
+                },
+                StepAction::Augment => {
+                    let ok = state.rarity == CraftRarity::Magic
+                        && (state.open_prefixes() > 0 || state.open_suffixes() > 0);
+                    ok.then_some(NextAction::Augment)
+                }
+                StepAction::Regal => {
+                    (state.rarity == CraftRarity::Magic).then_some(NextAction::Regal)
+                }
+                StepAction::Alch => {
+                    (state.rarity == CraftRarity::Normal).then_some(NextAction::Alch)
+                }
+                StepAction::Scour => {
+                    if state.rarity == CraftRarity::Normal {
+                        if step.goal.is_none() {
+                            self.advance();
+                            if self.current_step >= plan.steps.len() {
+                                self.finished = true;
+                                return NextAction::Stop;
+                            }
+                            continue;
+                        }
+                        None
+                    } else {
+                        Some(NextAction::Scour)
+                    }
+                }
+                StepAction::ScourAlch => match state.rarity {
+                    CraftRarity::Normal => Some(NextAction::Alch),
+                    _ => Some(NextAction::ScourAlch),
+                },
+                StepAction::Chaos => match state.rarity {
+                    CraftRarity::Normal => Some(NextAction::Alch),
+                    CraftRarity::Magic => Some(NextAction::Regal),
+                    CraftRarity::Rare => Some(NextAction::Chaos),
+                    CraftRarity::Other => Some(NextAction::ScourAlch),
+                },
+            };
+            if let Some(next) = decision {
+                return next;
+            }
+            self.apply_on_fail(plan, state, on_fail);
+            if self.failed.is_some() {
+                return NextAction::Stop;
+            }
+        }
+        NextAction::Stop
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildRunOutcome {
+    pub success: bool,
+    pub attempts: u32,
+    pub currency: CurrencyCounts,
+    pub step_actions: Vec<u64>,
+    pub step_accepts: Vec<u64>,
+}
+
+pub struct BuildSimulator {
+    pub plan: BuildPlan,
+    pub pool: Pool,
+}
+
+impl BuildSimulator {
+    pub fn new(data: &PobData, plan: BuildPlan) -> Result<Self, SimError> {
+        plan.validate_shape()?;
+        let pool = plan.validate_pool(data)?;
+        Ok(Self { plan, pool })
+    }
+
+    pub fn roller(&self) -> PoolRoller<'_> {
+        PoolRoller::new(&self.pool)
+    }
+
+    pub fn initial_state(&self, rng: &mut Rng) -> ItemState {
+        match self.plan.start {
+            StartRarity::Normal => ItemState::new(CraftRarity::Normal, Some(self.pool.item_level)),
+            StartRarity::Magic => {
+                let count = weighted_count(rng, &self.plan.options.magic_mod_weights, 1);
+                self.roller()
+                    .roll_magic_count(rng, count)
+                    .unwrap_or_else(|| {
+                        ItemState::new(CraftRarity::Magic, Some(self.pool.item_level))
+                    })
+            }
+            StartRarity::Rare => {
+                let count = weighted_count(rng, &self.plan.options.rare_mod_weights, 4);
+                self.roller().roll_rare_count(rng, count)
+            }
+        }
+    }
+
+    pub fn run_once(&self, rng: &mut Rng, max_actions: u32) -> BuildRunOutcome {
+        let mut state = self.initial_state(rng);
+        let mut runner = StepRunner::new();
+        let mut currency = CurrencyCounts::default();
+        let mut attempts = 0u32;
+        let mut actions = 0u32;
+        let mut step_actions = vec![0u64; self.plan.steps.len()];
+        let mut step_accepts = vec![0u64; self.plan.steps.len()];
+
+        loop {
+            runner.observe(&self.plan, &state);
+            if runner.finished {
+                return BuildRunOutcome {
+                    success: true,
+                    attempts,
+                    currency,
+                    step_actions,
+                    step_accepts,
+                };
+            }
+            if runner.failed.is_some() {
+                return BuildRunOutcome {
+                    success: false,
+                    attempts,
+                    currency,
+                    step_actions,
+                    step_accepts,
+                };
+            }
+            if actions >= max_actions {
+                return BuildRunOutcome {
+                    success: false,
+                    attempts,
+                    currency,
+                    step_actions,
+                    step_accepts,
+                };
+            }
+            let action = runner.next_action(&self.plan, &state);
+            if action == NextAction::Stop {
+                let success = runner.finished && runner.failed.is_none();
+                return BuildRunOutcome {
+                    success,
+                    attempts,
+                    currency,
+                    step_actions,
+                    step_accepts,
+                };
+            }
+            let step_index = runner.current_step;
+            let primary = step_action_is_primary(
+                self.plan
+                    .steps
+                    .get(step_index)
+                    .map(|step| step.action)
+                    .unwrap_or(StepAction::Alt),
+                action,
+            );
+            self.apply_action(rng, &mut state, action, &mut currency);
+            actions += 1;
+            if primary {
+                attempts += 1;
+                if let Some(value) = step_actions.get_mut(step_index) {
+                    *value += 1;
+                }
+            }
+            let transition = runner.after_action(&self.plan, &state, primary);
+            if matches!(
+                transition,
+                StepTransition::Advanced | StepTransition::Finished
+            ) && self
+                .plan
+                .steps
+                .get(step_index)
+                .is_some_and(|step| step.goal.is_some())
+            {
+                if let Some(value) = step_accepts.get_mut(step_index) {
+                    *value += 1;
+                }
+            }
+            if transition == StepTransition::Failed {
+                return BuildRunOutcome {
+                    success: false,
+                    attempts,
+                    currency,
+                    step_actions,
+                    step_accepts,
+                };
+            }
+        }
+    }
+
+    fn apply_action(
+        &self,
+        rng: &mut Rng,
+        state: &mut ItemState,
+        action: NextAction,
+        currency: &mut CurrencyCounts,
+    ) {
+        match action {
+            NextAction::Stop => {}
+            NextAction::Transmute => {
+                let count = weighted_count(rng, &self.plan.options.magic_mod_weights, 1);
+                if let Some(next) = self.roller().roll_magic_count(rng, count) {
+                    *state = next;
+                }
+                currency.transmute += 1;
+            }
+            NextAction::Alt => {
+                let count = weighted_count(rng, &self.plan.options.magic_mod_weights, 1);
+                if let Some(next) = self.roller().roll_magic_count(rng, count) {
+                    *state = next;
+                }
+                currency.alt += 1;
+            }
+            NextAction::Augment => {
+                if let Some(rolled) = self.roller().add_mod(rng, state) {
+                    state.mods.push(rolled);
+                    currency.aug += 1;
+                }
+            }
+            NextAction::Regal => {
+                if let Some(rolled) = self.roller().regal(rng, state) {
+                    state.mods.push(rolled);
+                    currency.regal += 1;
+                }
+            }
+            NextAction::Alch => {
+                let count = weighted_count(rng, &self.plan.options.rare_mod_weights, 4);
+                *state = self.roller().roll_rare_count(rng, count);
+                currency.alch += 1;
+            }
+            NextAction::Chaos => {
+                let count = weighted_count(rng, &self.plan.options.rare_mod_weights, 4);
+                *state = self.roller().roll_rare_count(rng, count);
+                currency.chaos += 1;
+            }
+            NextAction::Scour => {
+                if state.rarity != CraftRarity::Normal {
+                    currency.scour += 1;
+                }
+                *state = ItemState::new(CraftRarity::Normal, Some(self.pool.item_level));
+            }
+            NextAction::ScourAlch => {
+                if state.rarity != CraftRarity::Normal {
+                    currency.scour += 1;
+                }
+                let count = weighted_count(rng, &self.plan.options.rare_mod_weights, 4);
+                *state = self.roller().roll_rare_count(rng, count);
+                currency.alch += 1;
+            }
+            NextAction::ScourTransmute => {
+                if state.rarity != CraftRarity::Normal {
+                    currency.scour += 1;
+                }
+                let count = weighted_count(rng, &self.plan.options.magic_mod_weights, 1);
+                if let Some(next) = self.roller().roll_magic_count(rng, count) {
+                    *state = next;
+                }
+                currency.transmute += 1;
+            }
+        }
+    }
+}
+
+pub fn step_action_is_primary(step: StepAction, action: NextAction) -> bool {
+    if step == StepAction::Scour {
+        return action == NextAction::Scour;
+    }
+    // Every action that can produce or improve the current item counts as an
+    // attempt. Scour is reset overhead and Stop never applies.
+    !matches!(action, NextAction::Stop | NextAction::Scour)
+}
+
+pub fn weighted_count(rng: &mut Rng, weights: &[f64], first: usize) -> usize {
+    let total = weights
+        .iter()
+        .copied()
+        .filter(|weight| *weight > 0.0)
+        .sum::<f64>();
+    if total <= 0.0 {
+        return first;
+    }
+    let mut roll = rng.next_f64() * total;
+    for (index, weight) in weights.iter().enumerate() {
+        if *weight <= 0.0 {
+            continue;
+        }
+        if roll < *weight {
+            return first + index;
+        }
+        roll -= *weight;
+    }
+    first + weights.len().saturating_sub(1)
+}
+
 pub struct Simulator {
     pub plan: Plan,
     pub pool: Pool,
@@ -211,7 +799,7 @@ impl Simulator {
                 if state.rarity == CraftRarity::Rare {
                     currency.scour += 1;
                 }
-                let Some(magic) = self.roll_magic(rng, 0.0) else {
+                let Some(magic) = self.roller().roll_magic(rng, 0.0) else {
                     return RunOutcome {
                         success: false,
                         attempts,
@@ -225,7 +813,9 @@ impl Simulator {
             }
 
             if need_roll {
-                let Some(magic) = self.roll_magic(rng, self.plan.strategy.magic_two_mod_chance)
+                let Some(magic) = self
+                    .roller()
+                    .roll_magic(rng, self.plan.strategy.magic_two_mod_chance)
                 else {
                     return RunOutcome {
                         success: false,
@@ -260,7 +850,7 @@ impl Simulator {
                     AugmentMode::IfNeeded => evaluation.score > 0,
                 };
                 if should_augment {
-                    if let Some(rolled) = self.add_mod(rng, &mut state) {
+                    if let Some(rolled) = self.roller().add_mod(rng, &mut state) {
                         currency.aug += 1;
                         state.mods.push(rolled);
                         evaluation = self.evaluate_state(&state);
@@ -279,7 +869,7 @@ impl Simulator {
             if state.rarity == CraftRarity::Magic
                 && evaluation.score >= self.plan.strategy.regal_when_score
             {
-                if let Some(rolled) = self.regal(rng, &mut state) {
+                if let Some(rolled) = self.roller().regal(rng, &mut state) {
                     currency.regal += 1;
                     state.mods.push(rolled);
                     if self.evaluate_state(&state).satisfied {
@@ -314,10 +904,10 @@ impl Simulator {
         let mut attempts = 0u32;
 
         if state.rarity == CraftRarity::Normal {
-            state = self.roll_rare_count(rng, 4);
+            state = self.roller().roll_rare_count(rng, 4);
             currency.alch += 1;
         } else if state.rarity == CraftRarity::Magic {
-            if let Some(rolled) = self.regal(rng, &mut state) {
+            if let Some(rolled) = self.roller().regal(rng, &mut state) {
                 currency.regal += 1;
                 state.mods.push(rolled);
             }
@@ -341,7 +931,8 @@ impl Simulator {
                     currency,
                 };
             }
-            state = self.roll_rare(rng);
+            let count = legacy_rare_count(&self.plan, rng);
+            state = self.roller().roll_rare_count(rng, count);
             currency.chaos += 1;
         }
     }
@@ -355,7 +946,7 @@ impl Simulator {
         }
 
         loop {
-            let state = self.roll_rare_count(rng, 4);
+            let state = self.roller().roll_rare_count(rng, 4);
             currency.alch += 1;
             attempts += 1;
             if self.evaluate_state(&state).satisfied {
@@ -382,97 +973,27 @@ impl Simulator {
         match self.plan.strategy.start {
             StartRarity::Normal => ItemState::new(CraftRarity::Normal, Some(self.pool.item_level)),
             StartRarity::Magic => self
+                .roller()
                 .roll_magic(rng, self.plan.strategy.magic_two_mod_chance)
                 .unwrap_or_else(|| ItemState::new(CraftRarity::Normal, Some(self.pool.item_level))),
-            StartRarity::Rare => self.roll_rare(rng),
-        }
-    }
-
-    fn roll_magic(&self, rng: &mut Rng, two_mod_chance: f64) -> Option<ItemState> {
-        let mut state = ItemState::new(CraftRarity::Magic, Some(self.pool.item_level));
-        let mut used = [""; 6];
-        let mut used_count = 0usize;
-        let count = if rng.chance(two_mod_chance) { 2 } else { 1 };
-        let mut produced = 0usize;
-        for _ in 0..count {
-            let Some(slot) = self.pool.choose_slot(
-                rng,
-                &used[..used_count],
-                state.open_prefixes(),
-                state.open_suffixes(),
-            ) else {
-                break;
-            };
-            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
-                break;
-            };
-            if used_count < used.len() {
-                used[used_count] = pool_mod.group.as_str();
-                used_count += 1;
+            StartRarity::Rare => {
+                let count = legacy_rare_count(&self.plan, rng);
+                self.roller().roll_rare_count(rng, count)
             }
-            state.mods.push(pool_mod.roll_state(rng));
-            produced += 1;
-        }
-        if produced == 0 {
-            None
-        } else {
-            Some(state)
         }
     }
 
-    fn roll_rare(&self, rng: &mut Rng) -> ItemState {
-        let counts = &self.plan.strategy.chaos_mod_counts;
-        let count = counts[rng.index(counts.len())] as usize;
-        self.roll_rare_count(rng, count)
+    fn roller(&self) -> PoolRoller<'_> {
+        PoolRoller::new(&self.pool)
     }
+}
 
-    fn roll_rare_count(&self, rng: &mut Rng, count: usize) -> ItemState {
-        let mut state = ItemState::new(CraftRarity::Rare, Some(self.pool.item_level));
-        let mut used = [""; 6];
-        let mut used_count = 0usize;
-        for _ in 0..count {
-            let Some(slot) = self.pool.choose_slot(
-                rng,
-                &used[..used_count],
-                state.open_prefixes(),
-                state.open_suffixes(),
-            ) else {
-                break;
-            };
-            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
-                break;
-            };
-            if used_count < used.len() {
-                used[used_count] = pool_mod.group.as_str();
-                used_count += 1;
-            }
-            state.mods.push(pool_mod.roll_state(rng));
-        }
-        state
-    }
-
-    fn add_mod(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
-        let (used, used_count) = used_groups(state);
-        let slot = self.pool.choose_slot(
-            rng,
-            &used[..used_count],
-            state.open_prefixes(),
-            state.open_suffixes(),
-        )?;
-        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
-        Some(pool_mod.roll_state(rng))
-    }
-
-    fn regal(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
-        let (used, used_count) = used_groups(state);
-        let open_prefixes = 3u8.saturating_sub(state.prefix_count());
-        let open_suffixes = 3u8.saturating_sub(state.suffix_count());
-        let slot = self
-            .pool
-            .choose_slot(rng, &used[..used_count], open_prefixes, open_suffixes)?;
-        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
-        state.rarity = CraftRarity::Rare;
-        Some(pool_mod.roll_state(rng))
+fn legacy_rare_count(plan: &Plan, rng: &mut Rng) -> usize {
+    let counts = &plan.strategy.chaos_mod_counts;
+    if counts.is_empty() {
+        4
+    } else {
+        counts[rng.index(counts.len())] as usize
     }
 }
 
@@ -628,6 +1149,176 @@ pub fn simulate_with_options(
     })
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BuildSimulationReport {
+    pub plan_name: String,
+    pub base: String,
+    pub item_level: u32,
+    pub seed: u64,
+    pub runs: u64,
+    pub completed_runs: u64,
+    pub truncated: bool,
+    pub attempt_budget: Option<u64>,
+    pub total_attempts: u64,
+    pub successes: u64,
+    pub success_rate: f64,
+    pub mean_attempts: f64,
+    pub mean_success_attempts: Option<f64>,
+    pub mean_cost: f64,
+    pub mean_cost_success: Option<f64>,
+    pub mean_currency: BTreeMap<String, f64>,
+    pub mean_currency_success: Option<BTreeMap<String, f64>>,
+    pub steps: Vec<StepEstimate>,
+}
+
+pub fn simulate_build(
+    data: &PobData,
+    plan: BuildPlan,
+    runs: u64,
+    seed: u64,
+    max_total_attempts: Option<u64>,
+    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<BuildSimulationReport, SimError> {
+    if runs == 0 {
+        return Err(SimError::Invalid("runs must be > 0".to_string()));
+    }
+    if max_total_attempts == Some(0) {
+        return Err(SimError::Invalid(
+            "max_total_attempts must be > 0 or omitted".to_string(),
+        ));
+    }
+    let confidence = plan.options.confidence;
+    let costs = plan.costs;
+    let simulator = BuildSimulator::new(data, plan)?;
+    let plan_name = simulator.plan.name.clone();
+    let base = simulator.pool.base_label.clone();
+    let item_level = simulator.pool.item_level;
+    let step_names = simulator
+        .plan
+        .steps
+        .iter()
+        .map(|step| (step.name.clone(), step.action))
+        .collect::<Vec<_>>();
+    let mut step_actions = vec![0u64; simulator.plan.steps.len()];
+    let mut step_accepts = vec![0u64; simulator.plan.steps.len()];
+    let mut rng = Rng::new(seed);
+    let mut successes = 0u64;
+    let mut total_attempts = 0u64;
+    let mut completed_runs = 0u64;
+    let mut truncated = false;
+    let mut total_cost = 0.0;
+    let mut total_currency = CurrencyCounts::default();
+    let mut success_attempts = Vec::new();
+    let mut success_cost = 0.0;
+    let mut success_currency = CurrencyCounts::default();
+    let progress_step = (runs / 10).max(1);
+
+    for _ in 0..runs {
+        if let Some(budget) = max_total_attempts {
+            if total_attempts >= budget {
+                truncated = true;
+                break;
+            }
+        }
+        let outcome = simulator.run_once(&mut rng, 2_000_000);
+        completed_runs += 1;
+        total_attempts += outcome.attempts as u64;
+        total_cost += outcome.currency.cost(&costs);
+        accumulate(&mut total_currency, &outcome.currency);
+        for (index, value) in outcome.step_actions.iter().enumerate() {
+            if let Some(total) = step_actions.get_mut(index) {
+                *total += *value;
+            }
+        }
+        for (index, value) in outcome.step_accepts.iter().enumerate() {
+            if let Some(total) = step_accepts.get_mut(index) {
+                *total += *value;
+            }
+        }
+        if outcome.success {
+            successes += 1;
+            success_attempts.push(outcome.attempts);
+            success_cost += outcome.currency.cost(&costs);
+            accumulate(&mut success_currency, &outcome.currency);
+        }
+        if let Some(callback) = progress.as_mut() {
+            if completed_runs.is_multiple_of(progress_step) || completed_runs == runs {
+                callback(completed_runs, runs);
+            }
+        }
+    }
+
+    if completed_runs == 0 {
+        return Err(SimError::Invalid(
+            "attempt budget exhausted before the first run completed".to_string(),
+        ));
+    }
+    if truncated {
+        if let Some(callback) = progress.as_mut() {
+            callback(completed_runs, runs);
+        }
+    }
+
+    success_attempts.sort_unstable();
+    let mean_success_attempts = if successes > 0 {
+        Some(
+            success_attempts
+                .iter()
+                .map(|value| *value as f64)
+                .sum::<f64>()
+                / successes as f64,
+        )
+    } else {
+        None
+    };
+    let mean_currency = mean_map(&total_currency, completed_runs);
+    let mean_currency_success = if successes > 0 {
+        Some(mean_map(&success_currency, successes))
+    } else {
+        None
+    };
+    let steps = step_names
+        .iter()
+        .enumerate()
+        .map(|(index, (name, action))| {
+            let actions = step_actions.get(index).copied().unwrap_or(0);
+            let accepts = step_accepts.get(index).copied().unwrap_or(0);
+            let p = (actions > 0).then_some(accepts as f64 / actions as f64);
+            StepEstimate {
+                step_index: index,
+                p_success: p,
+                source: EstimateSource::MonteCarlo,
+                expected_attempts: p.and_then(expected_attempts),
+                confidence_attempts: p.and_then(|p| attempts_for_confidence(p, confidence)),
+                actions,
+                accepts,
+                note: Some(format!("{} ({})", name, action.label())),
+            }
+        })
+        .collect();
+
+    Ok(BuildSimulationReport {
+        plan_name,
+        base,
+        item_level,
+        seed,
+        runs,
+        completed_runs,
+        truncated,
+        attempt_budget: max_total_attempts,
+        total_attempts,
+        successes,
+        success_rate: successes as f64 / completed_runs as f64,
+        mean_attempts: total_attempts as f64 / completed_runs as f64,
+        mean_success_attempts,
+        mean_cost: total_cost / completed_runs as f64,
+        mean_cost_success: (successes > 0).then_some(success_cost / successes as f64),
+        mean_currency,
+        mean_currency_success,
+        steps,
+    })
+}
+
 fn accumulate(total: &mut CurrencyCounts, value: &CurrencyCounts) {
     total.transmute += value.transmute;
     total.alt += value.alt;
@@ -667,6 +1358,7 @@ mod tests {
             item_class: "Ring".to_string(),
             sub_type: None,
             tags: vec!["default".to_string(), "ring".to_string()],
+            influence_tags: BTreeMap::new(),
             implicit_mod_types: vec![],
             implicit_ids: vec![],
             level_req: None,
@@ -722,6 +1414,8 @@ mod tests {
                 base_names: vec!["Test Ring".to_string()],
                 tags: vec![],
                 item_level: 86,
+                unrestricted: false,
+                influences: vec![],
             },
             goal: Goal {
                 min_prefixes: Some(1),
@@ -844,5 +1538,74 @@ mod tests {
             + outcome.currency.transmute;
         assert!(total > 0);
         assert!(outcome.attempts > 0);
+    }
+
+    fn build_plan() -> BuildPlan {
+        let legacy = plan(Method::AltAugRegal);
+        BuildPlan {
+            schema: 2,
+            name: "build test".to_string(),
+            start: StartRarity::Normal,
+            base: legacy.base,
+            options: crate::build::BuildOptions::default(),
+            steps: vec![crate::build::PlanStep {
+                name: "life".to_string(),
+                action: StepAction::Alt,
+                goal: Some(legacy.goal),
+                on_fail: OnFail::Restart,
+                max_attempts: Some(1000),
+                augment: AugmentMode::Never,
+            }],
+            costs: Costs::default(),
+        }
+    }
+
+    #[test]
+    fn continue_past_final_step_fails_instead_of_succeeding() {
+        let mut build = build_plan();
+        build.steps[0].action = StepAction::Regal;
+        build.steps[0].on_fail = OnFail::Continue;
+        let mut runner = StepRunner::new();
+        let magic = ItemState::new(CraftRarity::Magic, Some(86));
+        let transition = runner.after_action(&build, &magic, true);
+        assert_eq!(transition, StepTransition::Failed);
+        assert!(!runner.finished);
+        assert!(runner.failed.is_some());
+    }
+
+    #[test]
+    fn step_runner_advances_on_accept() {
+        let build = build_plan();
+        let mut runner = StepRunner::new();
+        let normal = ItemState::new(CraftRarity::Normal, Some(86));
+        assert_eq!(runner.next_action(&build, &normal), NextAction::Transmute);
+
+        let mut magic = ItemState::new(CraftRarity::Magic, Some(86));
+        assert_eq!(runner.next_action(&build, &magic), NextAction::Alt);
+        magic.mods.push(StateMod {
+            slot: crate::plan::Slot::Prefix,
+            group: "Life".to_string(),
+            affix: "Hale".to_string(),
+            tier: Some(1),
+            values: vec![85.0],
+            percentiles: vec![0.5],
+        });
+        runner.after_action(&build, &magic, true);
+        assert!(runner.finished);
+    }
+
+    #[test]
+    fn build_simulator_reports_step_probabilities() {
+        let simulator = BuildSimulator::new(&data(), build_plan()).unwrap();
+        let mut rng = Rng::new(7);
+        let outcome = simulator.run_once(&mut rng, 100_000);
+        assert!(outcome.success);
+        assert!(outcome.step_actions[0] > 0);
+        assert!(outcome.step_accepts[0] > 0);
+
+        let report = simulate_build(&data(), build_plan(), 100, 7, None, None).unwrap();
+        assert!(report.successes > 0);
+        assert!(report.steps[0].p_success.unwrap_or(0.0) > 0.0);
+        assert!(report.steps[0].confidence_attempts.is_some());
     }
 }

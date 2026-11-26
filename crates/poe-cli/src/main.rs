@@ -5,7 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use poe_craft::{
-    evaluate, next_action, simulate_with_options, ItemState, Plan, Pool, Requirement, Simulator,
+    analytic_estimates, evaluate, next_action, simulate_build, simulate_with_options, BaseSpec,
+    BuildPlan, ItemState, Plan, PlanFile, Pool, Requirement, Simulator, StepRunner,
 };
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
 use poe_input::{AppConfig, Calibration, Color, Win32Game, Win32GameIo, TARGET_PANEL};
@@ -397,19 +398,28 @@ fn inspect(cache: &Path, item_path: &Path, all: bool, json: bool) -> Result<()> 
     Ok(())
 }
 
-fn load_plan(path: &Path) -> Result<Plan> {
-    Plan::load(path).with_context(|| format!("loading plan {}", path.display()))
+fn load_plan(path: &Path) -> Result<PlanFile> {
+    PlanFile::load(path).with_context(|| format!("loading plan {}", path.display()))
 }
 
 fn load_data(cache: &Path) -> Result<poe_data::PobData> {
-    if cache.exists() {
-        return load_cache(cache).with_context(|| format!("loading cache {}", cache.display()));
+    if poe_data::cache_is_current(cache) {
+        match load_cache(cache) {
+            Ok(data) => return Ok(data),
+            Err(error) => {
+                eprintln!(
+                    "Data cache {} could not be decoded ({error}); rebuilding...",
+                    cache.display()
+                );
+                let _ = std::fs::remove_file(cache);
+            }
+        }
     }
 
     let lock = Path::new("data/pob-lock.json");
     let data_dir = Path::new("data/pob");
     eprintln!(
-        "Data cache {} is missing; downloading pinned Path of Building data...",
+        "Data cache {} is missing or outdated; downloading pinned Path of Building data...",
         cache.display()
     );
     let mut progress = |progress: poe_data::DataProgress| {
@@ -434,12 +444,85 @@ fn load_data(cache: &Path) -> Result<poe_data::PobData> {
 
 fn plan_validate(cache: &Path, plan_path: &Path) -> Result<()> {
     let data = load_data(cache)?;
-    let plan = load_plan(plan_path)?;
-    let simulator = Simulator::new(&data, plan).context("validating plan")?;
-    print_plan_summary(&simulator.plan, &simulator.pool);
-    println!();
-    println!("plan is valid");
+    match load_plan(plan_path)? {
+        PlanFile::Legacy(plan) => {
+            let simulator = Simulator::new(&data, plan).context("validating plan")?;
+            print_plan_summary(&simulator.plan, &simulator.pool);
+            println!();
+            println!("plan is valid");
+        }
+        PlanFile::Steps(plan) => {
+            let summary = plan.validate(&data).context("validating plan")?;
+            let pool = plan.pool(&data).context("building plan pool")?;
+            print_build_summary(&plan, &summary);
+            println!();
+            for (index, estimate) in analytic_estimates(&plan, &pool).into_iter().enumerate() {
+                let step = &plan.steps[index];
+                match estimate {
+                    Some(estimate) => println!(
+                        "Step {}: {} | p={:.4}% expected {:.2} attempts, confidence attempts {}",
+                        index + 1,
+                        step.name,
+                        estimate.p_success.unwrap_or(0.0) * 100.0,
+                        estimate.expected_attempts.unwrap_or(f64::INFINITY),
+                        estimate
+                            .confidence_attempts
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    ),
+                    None => println!(
+                        "Step {}: {} ({}) | run simulation for probability",
+                        index + 1,
+                        step.name,
+                        step.action.label()
+                    ),
+                }
+            }
+            println!();
+            println!("plan is valid");
+        }
+    }
     Ok(())
+}
+
+fn print_build_summary(plan: &BuildPlan, summary: &poe_craft::BuildSummary) {
+    println!("Plan: {}", plan.name);
+    println!(
+        "Base: {} (item level {}, unrestricted {}, {} tags)",
+        summary.base,
+        summary.item_level,
+        plan.base.unrestricted,
+        summary.base_tags.len()
+    );
+    if !plan.base.influences.is_empty() {
+        println!(
+            "Influences: {}",
+            plan.base
+                .influences
+                .iter()
+                .map(|influence| influence.display())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!(
+        "Pool: {} prefix mods / {} suffix mods; {} steps",
+        summary.prefixes, summary.suffixes, summary.steps
+    );
+    for (index, step) in plan.steps.iter().enumerate() {
+        println!(
+            "  steps[{}]: {} | {} | on_fail {:?} | accept {}",
+            index,
+            step.name,
+            step.action.label(),
+            step.on_fail,
+            if step.goal.is_some() {
+                "yes"
+            } else {
+                "no (advance)"
+            }
+        );
+    }
 }
 
 fn print_plan_summary(plan: &Plan, pool: &Pool) {
@@ -558,14 +641,92 @@ fn plan_simulate(
             eprintln!("progress: {completed}/{total} runs");
         }
     };
-    let report = simulate_with_options(&data, plan, runs, seed, budget, Some(&mut progress))
-        .context("simulating plan")?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        print_report(&report);
+    match plan {
+        PlanFile::Legacy(plan) => {
+            let report =
+                simulate_with_options(&data, plan, runs, seed, budget, Some(&mut progress))
+                    .context("simulating plan")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_report(&report);
+            }
+        }
+        PlanFile::Steps(plan) => {
+            let report = simulate_build(&data, plan, runs, seed, budget, Some(&mut progress))
+                .context("simulating build plan")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_build_report(&report);
+            }
+        }
     }
     Ok(())
+}
+
+fn print_build_report(report: &poe_craft::BuildSimulationReport) {
+    println!("Plan: {}", report.plan_name);
+    println!("Base: {} (item level {})", report.base, report.item_level);
+    println!(
+        "Runs: {} requested, {} completed (seed {})",
+        report.runs, report.completed_runs, report.seed
+    );
+    if report.truncated {
+        println!(
+            "Budget: stopped after {} attempts (limit {})",
+            report.total_attempts,
+            report
+                .attempt_budget
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    println!(
+        "Success: {:.2}% ({}/{})",
+        report.success_rate * 100.0,
+        report.successes,
+        report.completed_runs
+    );
+    println!(
+        "Attempts: mean {:.2}{}",
+        report.mean_attempts,
+        report
+            .mean_success_attempts
+            .map(|value| format!("; success mean {value:.2}"))
+            .unwrap_or_default()
+    );
+    println!(
+        "Cost: mean {:.3}{}",
+        report.mean_cost,
+        report
+            .mean_cost_success
+            .map(|value| format!("; success mean {value:.3}"))
+            .unwrap_or_default()
+    );
+    println!("Currency/run: {}", format_map(&report.mean_currency));
+    if let Some(success_map) = &report.mean_currency_success {
+        println!("Currency/success: {}", format_map(success_map));
+    }
+    println!("Steps:");
+    for step in &report.steps {
+        println!(
+            "  {}: p={} expected {} confidence {} | actions {} accepts {} | {}",
+            step.step_index + 1,
+            step.p_success
+                .map(|value| format!("{:.4}%", value * 100.0))
+                .unwrap_or_else(|| "-".to_string()),
+            step.expected_attempts
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "-".to_string()),
+            step.confidence_attempts
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            step.actions,
+            step.accepts,
+            step.note.clone().unwrap_or_default()
+        );
+    }
 }
 
 fn print_report(report: &poe_craft::SimulationReport) {
@@ -639,8 +800,8 @@ fn format_map(map: &BTreeMap<String, f64>) -> String {
         .join(", ")
 }
 
-fn plan_base_warning(plan: &Plan, item: &poe_item::ParsedItem, pool: &Pool) -> Option<String> {
-    if let (Some(expected), Some(actual)) = (&plan.base.item_class, &item.item_class) {
+fn plan_base_warning(base: &BaseSpec, item: &poe_item::ParsedItem, pool: &Pool) -> Option<String> {
+    if let (Some(expected), Some(actual)) = (&base.item_class, &item.item_class) {
         if !poe_craft::class_matches(actual, expected) {
             return Some(format!(
                 "item class {actual} does not match plan class {expected} (target {})",
@@ -648,15 +809,15 @@ fn plan_base_warning(plan: &Plan, item: &poe_item::ParsedItem, pool: &Pool) -> O
             ));
         }
     }
-    if !plan.base.base_names.is_empty() {
+    if !base.base_names.is_empty() {
         if let Some(actual_base) = &item.base_type {
-            let matches = plan.base.base_names.iter().any(|name| {
+            let matches = base.base_names.iter().any(|name| {
                 actual_base == name || actual_base.ends_with(name) || actual_base.contains(name)
             });
             if !matches {
                 return Some(format!(
                     "item base {actual_base} does not match plan base {}",
-                    plan.base.base_names.join(" / ")
+                    base.base_names.join(" / ")
                 ));
             }
         }
@@ -667,29 +828,79 @@ fn plan_base_warning(plan: &Plan, item: &poe_item::ParsedItem, pool: &Pool) -> O
 fn plan_check(cache: &Path, plan_path: &Path, item_path: &Path, json: bool) -> Result<()> {
     let data = load_data(cache)?;
     let plan = load_plan(plan_path)?;
-    let pool = Pool::from_plan(&data, &plan).context("validating plan against data")?;
     let text = std::fs::read_to_string(item_path)
         .with_context(|| format!("reading item {}", item_path.display()))?;
     let parsed = parse_item(&text);
     let resolver = Resolver::new(&data);
     let resolved = resolver.resolve_item(&parsed);
     let state = ItemState::from_resolved(&resolved);
-    let evaluation = evaluate(&plan.goal, &state);
-    let action = next_action(&plan, &state);
-    let base_warning = plan_base_warning(&plan, &parsed, &pool);
+
+    let (plan_name, base, pool, evaluation, action, step_info, goal_min_score) = match &plan {
+        PlanFile::Legacy(plan) => {
+            let pool = Pool::from_plan(&data, plan).context("validating plan against data")?;
+            (
+                plan.name.clone(),
+                plan.base.clone(),
+                pool,
+                evaluate(&plan.goal, &state),
+                next_action(plan, &state),
+                None,
+                plan.goal.min_score,
+            )
+        }
+        PlanFile::Steps(plan) => {
+            let pool = plan
+                .validate_pool(&data)
+                .context("validating plan against data")?;
+            let mut runner = StepRunner::new();
+            runner.observe(plan, &state);
+            let goal = if runner.finished {
+                plan.final_goal()
+            } else {
+                runner.target_goal(plan)
+            };
+            let evaluation = goal
+                .map(|goal| evaluate(goal, &state))
+                .unwrap_or_else(|| evaluate(&poe_craft::Goal::default(), &state));
+            let action = if runner.finished || runner.failed.is_some() {
+                poe_craft::NextAction::Stop
+            } else {
+                runner.next_action(plan, &state)
+            };
+            let step_info = plan
+                .steps
+                .get(runner.current_step)
+                .map(|step| (runner.current_step, step.name.clone(), plan.steps.len()));
+            let summary = goal.map(|goal| goal.min_score).unwrap_or(0);
+            (
+                plan.name.clone(),
+                plan.base.clone(),
+                pool,
+                evaluation,
+                action,
+                step_info,
+                summary,
+            )
+        }
+    };
+
+    let base_warning = plan_base_warning(&base, &parsed, &pool);
     let recommended = base_warning.is_none().then_some(action);
 
     if json {
         let value = serde_json::json!({
-            "plan": plan.name,
+            "plan": plan_name,
             "item": state,
             "evaluation": evaluation,
             "next_action": recommended,
             "base_warning": base_warning,
+            "step_index": step_info.as_ref().map(|(index, _, _)| *index),
+            "step_name": step_info.as_ref().map(|(_, name, _)| name.clone()),
+            "step_total": step_info.as_ref().map(|(_, _, total)| *total),
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
-        println!("Plan: {}", plan.name);
+        println!("Plan: {plan_name}");
         if let Some(warning) = &base_warning {
             println!("Warning: {warning}");
         }
@@ -703,6 +914,9 @@ fn plan_check(cache: &Path, plan_path: &Path, item_path: &Path, json: bool) -> R
             state.open_prefixes(),
             state.open_suffixes()
         );
+        if let Some((index, name, total)) = &step_info {
+            println!("Step: {}/{} | {name}", index + 1, total);
+        }
         println!(
             "Goal: {} | score {}/{} | required {}/{} | weighted {}/{}",
             if evaluation.satisfied {
@@ -711,7 +925,7 @@ fn plan_check(cache: &Path, plan_path: &Path, item_path: &Path, json: bool) -> R
                 "not satisfied"
             },
             evaluation.score,
-            plan.goal.min_score,
+            goal_min_score,
             evaluation.required_matched,
             evaluation.required_total,
             evaluation.weighted_matched,

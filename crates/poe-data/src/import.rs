@@ -1,7 +1,8 @@
 //! Import Path of Building data files into the serialized data model.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,11 @@ use crate::lua::{self, LuaError, LuaTable, LuaValue};
 use crate::model::{
     BaseItem, DataVersion, Essence, Mod, ModDomain, ModType, PobData, TradeHash, TradeStat,
 };
+
+/// Bump this whenever the serialized data model changes. Old caches are
+/// rejected and rebuilt from the pinned local files.
+pub const CACHE_SCHEMA: u32 = 2;
+pub(crate) const CACHE_MAGIC: &[u8; 8] = b"POECACHE";
 
 const MOD_FILES: &[(&str, ModDomain)] = &[
     ("ModExplicit.lua", ModDomain::Explicit),
@@ -46,6 +52,8 @@ pub enum ImportError {
     Encode(#[from] rmp_serde::encode::Error),
     #[error("cache decode error: {0}")]
     Decode(#[from] rmp_serde::decode::Error),
+    #[error("data cache is outdated; delete it to rebuild from the pinned data files")]
+    CacheOutdated,
 }
 
 pub fn parse_mod_file(source: &str, domain: ModDomain) -> Result<Vec<Mod>, ImportError> {
@@ -165,12 +173,26 @@ pub fn parse_bases_file(source: &str) -> Result<Vec<BaseItem>, ImportError> {
             .map(flatten_strings)
             .unwrap_or_default();
 
+        let influence_tags = table
+            .get_table("influenceTags")
+            .map(|tags| {
+                tags.fields
+                    .iter()
+                    .filter_map(|(key, value)| match value {
+                        LuaValue::String(tag) => Some((key.clone(), tag.clone())),
+                        _ => None,
+                    })
+                    .collect::<BTreeMap<String, String>>()
+            })
+            .unwrap_or_default();
+
         let req = table.get_table("req");
         bases.push(BaseItem {
             name,
             item_class: table.get_str("type").unwrap_or_default().to_owned(),
             sub_type: table.get_str("subType").map(str::to_owned),
             tags,
+            influence_tags,
             implicit_mod_types,
             implicit_ids: table.string_list("implicitIds"),
             level_req: req.and_then(|req| req.get_i64("level")),
@@ -373,14 +395,54 @@ pub fn save_cache(data: &PobData, path: &Path) -> Result<(), ImportError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let bytes = rmp_serde::to_vec(data)?;
-    fs::write(path, bytes)?;
+    let payload = rmp_serde::to_vec(data)?;
+    let mut bytes = Vec::with_capacity(12 + payload.len());
+    bytes.extend_from_slice(CACHE_MAGIC);
+    bytes.extend_from_slice(&CACHE_SCHEMA.to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    let temp = path.with_file_name(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("cache")
+    ));
+    fs::write(&temp, bytes)?;
+    if let Err(error) = fs::rename(&temp, path) {
+        if path.exists() {
+            fs::remove_file(path)?;
+            fs::rename(&temp, path)?;
+        } else {
+            return Err(error.into());
+        }
+    }
     Ok(())
 }
 
 pub fn load_cache(path: &Path) -> Result<PobData, ImportError> {
     let bytes = fs::read(path)?;
-    Ok(rmp_serde::from_slice(&bytes)?)
+    if bytes.len() < 12 || &bytes[..8] != CACHE_MAGIC {
+        return Err(ImportError::CacheOutdated);
+    }
+    let schema = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    if schema != CACHE_SCHEMA {
+        return Err(ImportError::CacheOutdated);
+    }
+    Ok(rmp_serde::from_slice(&bytes[12..])?)
+}
+
+/// Whether the cache exists and carries the current schema header.
+pub fn cache_is_current(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 12];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    let has_payload = file.metadata().map(|meta| meta.len() > 12).unwrap_or(false);
+    has_payload
+        && &header[..8] == CACHE_MAGIC
+        && u32::from_le_bytes([header[8], header[9], header[10], header[11]]) == CACHE_SCHEMA
 }
 
 #[cfg(test)]
@@ -430,6 +492,7 @@ mod tests {
             itemBases["Coral Ring"] = {
                 type = "Ring",
                 tags = { ring = true, default = true },
+                influenceTags = { shaper = "ring_shaper", elder = "ring_elder" },
                 implicit = "+(20-30) to Strength",
                 implicitModTypes = { { "attribute", "strength" } },
                 req = { level = 8 },
@@ -442,6 +505,36 @@ mod tests {
         assert_eq!(bases[0].item_class, "Ring");
         assert_eq!(bases[0].tags, vec!["default", "ring"]);
         assert_eq!(bases[0].implicit_mod_types, vec!["attribute", "strength"]);
+        assert_eq!(
+            bases[0].influence_tags.get("shaper").map(String::as_str),
+            Some("ring_shaper")
+        );
         assert_eq!(bases[0].level_req, Some(8));
+    }
+
+    #[test]
+    fn header_only_cache_is_not_current() {
+        let path = std::env::temp_dir().join(format!(
+            "poe-crafter-header-only-{}.msgpack",
+            std::process::id()
+        ));
+        let mut header = Vec::new();
+        header.extend_from_slice(CACHE_MAGIC);
+        header.extend_from_slice(&CACHE_SCHEMA.to_le_bytes());
+        std::fs::write(&path, header).unwrap();
+        assert!(!cache_is_current(&path));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn old_cache_header_is_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "poe-crafter-old-cache-{}.msgpack",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"old cache").unwrap();
+        assert!(matches!(load_cache(&path), Err(ImportError::CacheOutdated)));
+        assert!(!cache_is_current(&path));
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -96,3 +96,17 @@ command that needs item or plan data.
 - More crafting actions beyond the Phase 2 currency set.
 - A general plan/step DSL instead of fixed strategy methods.
 - Batch crafting: multiple slots, stash scanning, and item queues.
+
+
+## Build tab
+
+The **Build** tab authors executable schema 2 plans:
+
+- choose an item class/base, item level or unrestricted, and up to two classic influences;
+- add ordered steps (`alt`, `alt_aug`, `regal`, `scour_alch`, `chaos`, and single currency actions);
+- search the eligible pool and add required or weighted mods with tier/value thresholds;
+- validate the base, action sequence, slot caps, and step goals;
+- show analytic or simulated per-step success probability, expected attempts, and confidence attempts;
+- save atomically to the plan path used by the Plan and Run tabs.
+
+Schema 1 plans remain available in the Plan tab and are not editable in the builder.

@@ -1,0 +1,58 @@
+schema = 2
+name = "ES boots: ES% prefix, then regal life"
+start = "normal"
+
+[base]
+item_class = "Boots"
+base_names = ["Sorcerer Boots"]
+item_level = 86
+unrestricted = false
+influences = []
+
+[options]
+confidence = 0.6321205588
+magic_mod_weights = [1, 1]
+rare_mod_weights = [8, 3, 1]
+
+[costs]
+transmute = 0.01
+alt = 0.05
+aug = 0.1
+regal = 0.8
+alch = 0.2
+scour = 0.08
+chaos = 1.0
+
+[[steps]]
+name = "Roll ES% prefix"
+action = "alt"
+on_fail = "restart"
+max_attempts = 50000
+
+[steps.goal]
+min_prefixes = 1
+max_prefixes = 1
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "LocalEnergyShieldPercent"
+min_tier = 2
+
+[[steps]]
+name = "Regal life"
+action = "regal"
+on_fail = "restart"
+
+[steps.goal]
+min_prefixes = 2
+max_prefixes = 2
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "LocalEnergyShieldPercent"
+min_tier = 2
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "IncreasedLife"
+min_value = 80

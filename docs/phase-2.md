@@ -204,3 +204,13 @@ mask for normal item sizes. Release timings on the development machine:
 
 Phase 3 is implemented in `poe-session` and `poe-input`; see
 `docs/phase-3.md`.
+
+
+## Roll and probability model (current)
+
+- Magic rolls (`transmute`, `alt`) use 1 or 2 mods at 50/50.
+- Rare rolls (`alch`, `chaos`) use 4/5/6 mods with weights 8:3:1.
+- Pool entries are `(mod, tier)` pairs; the draw is a single weighted draw over the concatenated prefix/suffix pool.
+- After a draw, all entries in the drawn mod group are removed and prefix/suffix caps are enforced.
+- Influences gate additional mod groups: Shaper, Elder, Crusader, Redeemer (`eyrie`), Hunter (`basilisk`), Warlord (`adjudicator`).
+- Schema 2 probabilities use an analytic estimate for simple first-step single-target goals, and Monte Carlo for complex or conditional steps. Confidence attempts use `ceil(ln(1-confidence)/ln(1-p))`, default confidence `1 - 1/e`.

@@ -157,3 +157,40 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 See `docs/phase-3.md` and `docs/phase-4.md` for the safety model and UI notes.
+
+
+## Step plans (schema 2)
+
+Plans can now describe an ordered currency pipeline instead of a single fixed strategy:
+
+```toml
+schema = 2
+name = "ES boots"
+start = "normal"
+
+[base]
+item_class = "Boots"
+base_names = ["Sorcerer Boots"]
+item_level = 86
+unrestricted = false
+influences = [] # shaper | elder | crusader | redeemer | hunter | warlord, max 2
+
+[[steps]]
+name = "ES% prefix"
+action = "alt"
+on_fail = "restart"
+
+[steps.goal]
+min_prefixes = 1
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "LocalEnergyShieldPercent"
+min_tier = 2
+```
+
+Run `poe plan validate plans/es-boots-alt-regal-steps.toml` for validation and analytic estimates, or `poe plan simulate ...` for Monte Carlo per-step probabilities. The UI **Build** tab authors and saves schema 2 plans.
+
+Valid step actions: `transmute`, `alt`, `alt_aug`, `augment`, `regal`, `alch`, `scour`, `scour_alch`, `chaos`. Loop actions require an accept goal. One-shot steps use `on_fail = "restart" | "continue" | "abort"`.
+
+Schema 1 plans remain supported. Old data caches are rebuilt automatically because the cache now carries a schema header.

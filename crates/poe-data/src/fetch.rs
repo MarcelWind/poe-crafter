@@ -9,7 +9,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::import::{from_pob_dir, save_cache, ImportError};
+use crate::import::{cache_is_current, from_pob_dir, save_cache, ImportError};
 
 const USER_AGENT: &str = "poe-crafter-data-fetch/1";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -104,7 +104,7 @@ pub fn ensure_cache(
     cache_path: &Path,
     mut progress: Option<&mut dyn FnMut(DataProgress)>,
 ) -> Result<DataOutcome, DataError> {
-    if cache_path.exists() {
+    if cache_is_current(cache_path) {
         return Ok(DataOutcome {
             cache_built: false,
             files: 0,
@@ -318,7 +318,11 @@ mod tests {
         let dir = std::env::temp_dir().join("poe-crafter-fetch-cache-test");
         std::fs::create_dir_all(&dir).unwrap();
         let cache = dir.join("data.msgpack");
-        std::fs::write(&cache, b"cache").unwrap();
+        let mut header = Vec::new();
+        header.extend_from_slice(crate::import::CACHE_MAGIC);
+        header.extend_from_slice(&crate::import::CACHE_SCHEMA.to_le_bytes());
+        header.push(0);
+        std::fs::write(&cache, header).unwrap();
         let outcome = ensure_cache(
             &dir.join("missing-lock.json"),
             &dir.join("data"),

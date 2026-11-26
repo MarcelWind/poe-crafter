@@ -152,6 +152,10 @@ pub struct BaseItem {
     pub item_class: String,
     pub sub_type: Option<String>,
     pub tags: Vec<String>,
+    /// Maps PoB influence keys (shaper, adjudicator, ...) to the base's
+    /// influence tag used by mod spawn weights.
+    #[serde(default)]
+    pub influence_tags: BTreeMap<String, String>,
     pub implicit_mod_types: Vec<String>,
     pub implicit_ids: Vec<String>,
     pub level_req: Option<i64>,

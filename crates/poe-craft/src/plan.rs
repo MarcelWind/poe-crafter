@@ -36,6 +36,56 @@ pub struct BaseSpec {
     #[serde(default)]
     pub tags: Vec<String>,
     pub item_level: u32,
+    /// Ignore the item level when building the mod pool.
+    #[serde(default)]
+    pub unrestricted: bool,
+    /// Classic influences. At most two are supported.
+    #[serde(default)]
+    pub influences: Vec<Influence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Influence {
+    Shaper,
+    Elder,
+    Crusader,
+    Redeemer,
+    Hunter,
+    Warlord,
+}
+
+impl Influence {
+    pub fn pob_key(self) -> &'static str {
+        match self {
+            Influence::Shaper => "shaper",
+            Influence::Elder => "elder",
+            Influence::Crusader => "crusader",
+            Influence::Redeemer => "eyrie",
+            Influence::Hunter => "basilisk",
+            Influence::Warlord => "adjudicator",
+        }
+    }
+
+    pub fn display(self) -> &'static str {
+        match self {
+            Influence::Shaper => "Shaper",
+            Influence::Elder => "Elder",
+            Influence::Crusader => "Crusader",
+            Influence::Redeemer => "Redeemer",
+            Influence::Hunter => "Hunter",
+            Influence::Warlord => "Warlord",
+        }
+    }
+
+    pub const ALL: [Influence; 6] = [
+        Influence::Shaper,
+        Influence::Elder,
+        Influence::Crusader,
+        Influence::Redeemer,
+        Influence::Hunter,
+        Influence::Warlord,
+    ];
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -235,6 +285,20 @@ impl Plan {
         if self.base.base_names.is_empty() && self.base.tags.is_empty() {
             errors.push("base must set base_names or tags".to_string());
         }
+        if self.base.influences.len() > 2 {
+            errors.push("base.influences supports at most two influences".to_string());
+        }
+        for (index, influence) in self.base.influences.iter().enumerate() {
+            if self.base.influences[..index].contains(influence) {
+                errors.push(format!(
+                    "base.influences contains duplicate {}",
+                    influence.display()
+                ));
+            }
+        }
+        if !self.base.influences.is_empty() && self.base.base_names.is_empty() {
+            errors.push("base.influences requires base_names".to_string());
+        }
 
         self.validate_goal(&mut errors);
         self.validate_strategy(&mut errors);
@@ -248,7 +312,10 @@ impl Plan {
     }
 
     fn validate_goal(&self, errors: &mut Vec<String>) {
-        let goal = &self.goal;
+        Self::validate_goal_shape(&self.goal, errors);
+    }
+
+    pub(crate) fn validate_goal_shape(goal: &Goal, errors: &mut Vec<String>) {
         let has_minimum = !goal.required.is_empty()
             || goal.min_score > 0
             || goal.min_prefixes.unwrap_or(0) > 0
@@ -784,7 +851,8 @@ method = "alt_aug_regal"
             let entry = entry.unwrap();
             let path = entry.path();
             if path.extension().and_then(|value| value.to_str()) == Some("toml") {
-                Plan::load(&path)
+                let text = std::fs::read_to_string(&path).unwrap();
+                crate::build::PlanFile::from_toml(&text)
                     .unwrap_or_else(|error| panic!("failed to load {}: {error}", path.display()));
                 count += 1;
             }

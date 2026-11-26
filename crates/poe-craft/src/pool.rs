@@ -6,7 +6,7 @@ use poe_data::{BaseItem, Mod, ModDomain, ModType, PobData};
 use poe_item::normalize_mod_text;
 use thiserror::Error;
 
-use crate::plan::{BaseSpec, Plan, Requirement, Slot};
+use crate::plan::{BaseSpec, Goal, Plan, Requirement, Slot};
 use crate::state::StateMod;
 use poe_timing::Rng;
 
@@ -22,6 +22,8 @@ pub enum PoolError {
     NoMods,
     #[error("{label} cannot match any eligible mod: {reason}")]
     ImpossibleRequirement { label: String, reason: String },
+    #[error("base {base} does not support the {influence} influence")]
+    InfluenceUnsupported { base: String, influence: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,15 +87,26 @@ pub struct Pool {
 
 impl Pool {
     pub fn from_plan(data: &PobData, plan: &Plan) -> Result<Self, PoolError> {
-        let (base_label, base_tags) = resolve_base(data, &plan.base)?;
-        let item_level = plan.base.item_level;
+        let pool = Self::from_spec(data, &plan.base)?;
+        pool.validate_requirements(plan)?;
+        Ok(pool)
+    }
+
+    pub fn from_spec(data: &PobData, spec: &BaseSpec) -> Result<Self, PoolError> {
+        let (base_label, base_tags) = resolve_base(data, spec)?;
+        let item_level = spec.item_level;
+        let max_mod_level = if spec.unrestricted {
+            u32::MAX
+        } else {
+            item_level
+        };
 
         let mut candidate_mods: Vec<(ModType, &Mod, f64)> = Vec::new();
         for entry in &data.mods {
             if entry.domain != ModDomain::Explicit || !entry.mod_type.is_affix() {
                 continue;
             }
-            if entry.level > item_level as i64 || entry.stat_texts.is_empty() {
+            if entry.level > max_mod_level as i64 || entry.stat_texts.is_empty() {
                 continue;
             }
             let weight = weight_for(entry, &base_tags);
@@ -173,23 +186,26 @@ impl Pool {
             suffixes,
         };
 
-        pool.validate_requirements(plan)?;
         Ok(pool)
     }
 
     pub fn validate_requirements(&self, plan: &Plan) -> Result<(), PoolError> {
-        for (index, requirement) in plan.goal.required.iter().enumerate() {
-            self.validate_requirement(requirement, &format!("required[{index}]"))?;
-        }
-        for (index, requirement) in plan.goal.weighted.iter().enumerate() {
-            self.validate_requirement(requirement, &format!("weighted[{index}]"))?;
-        }
-        self.validate_required_layout(plan)
+        self.validate_goal(&plan.goal, (3, 3))
     }
 
-    fn validate_required_layout(&self, plan: &Plan) -> Result<(), PoolError> {
-        let mut options: Vec<Vec<Slot>> = Vec::with_capacity(plan.goal.required.len());
-        for (index, requirement) in plan.goal.required.iter().enumerate() {
+    pub fn validate_goal(&self, goal: &Goal, caps: (u8, u8)) -> Result<(), PoolError> {
+        for (index, requirement) in goal.required.iter().enumerate() {
+            self.validate_requirement(requirement, &format!("required[{index}]"))?;
+        }
+        for (index, requirement) in goal.weighted.iter().enumerate() {
+            self.validate_requirement(requirement, &format!("weighted[{index}]"))?;
+        }
+        self.validate_required_layout(goal, caps)
+    }
+
+    fn validate_required_layout(&self, goal: &Goal, caps: (u8, u8)) -> Result<(), PoolError> {
+        let mut options: Vec<Vec<Slot>> = Vec::with_capacity(goal.required.len());
+        for (index, requirement) in goal.required.iter().enumerate() {
             let mut slots = Vec::new();
             if matches!(requirement.slot, Slot::Prefix | Slot::Any)
                 && self
@@ -216,10 +232,12 @@ impl Pool {
             options.push(slots);
         }
 
-        let max_prefixes = usize::from(plan.goal.max_prefixes.unwrap_or(3)).min(3);
-        let max_suffixes = usize::from(plan.goal.max_suffixes.unwrap_or(3)).min(3);
-        let min_open_prefixes = usize::from(plan.goal.min_open_prefixes.unwrap_or(0));
-        let min_open_suffixes = usize::from(plan.goal.min_open_suffixes.unwrap_or(0));
+        let max_prefixes =
+            usize::from(goal.max_prefixes.unwrap_or(caps.0)).min(usize::from(caps.0));
+        let max_suffixes =
+            usize::from(goal.max_suffixes.unwrap_or(caps.1)).min(usize::from(caps.1));
+        let min_open_prefixes = usize::from(goal.min_open_prefixes.unwrap_or(0));
+        let min_open_suffixes = usize::from(goal.min_open_suffixes.unwrap_or(0));
 
         let feasible = feasible_required_layout(
             &options,
@@ -228,6 +246,8 @@ impl Pool {
             0,
             max_prefixes,
             max_suffixes,
+            usize::from(caps.0),
+            usize::from(caps.1),
             min_open_prefixes,
             min_open_suffixes,
         );
@@ -283,12 +303,75 @@ impl Pool {
         Ok(())
     }
 
+    pub fn total_weight(&self) -> f64 {
+        self.prefix_weight + self.suffix_weight
+    }
+
     pub fn candidates(&self, slot: Slot) -> Vec<&PoolMod> {
         match slot {
             Slot::Prefix => self.prefixes.iter().collect(),
             Slot::Suffix => self.suffixes.iter().collect(),
             Slot::Any => self.prefixes.iter().chain(self.suffixes.iter()).collect(),
         }
+    }
+
+    /// Case-insensitive token/substring search over group, affix, and stat text.
+    /// Empty queries return the first `limit` eligible mods.
+    pub fn search(&self, query: &str, slot: Slot, limit: usize) -> Vec<&PoolMod> {
+        let tokens = query
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let mut matches = self
+            .candidates(slot)
+            .into_iter()
+            .filter_map(|entry| {
+                let group = entry.group.to_ascii_lowercase();
+                let affix = entry.affix.to_ascii_lowercase();
+                let stats = entry
+                    .stat_lines
+                    .iter()
+                    .map(|line| line.template.to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                let mut score = 0i32;
+                for token in &tokens {
+                    let mut token_score = 0i32;
+                    if group == *token {
+                        token_score = 100;
+                    } else if group.starts_with(token) {
+                        token_score = 80;
+                    } else if group.contains(token) {
+                        token_score = 60;
+                    }
+                    if affix.starts_with(token) {
+                        token_score = token_score.max(70);
+                    } else if affix.contains(token) {
+                        token_score = token_score.max(45);
+                    }
+                    if stats.iter().any(|line| line.contains(token)) {
+                        token_score = token_score.max(35);
+                    }
+                    if token_score == 0 {
+                        return None;
+                    }
+                    score += token_score;
+                }
+                Some((score, entry))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.group.cmp(&right.1.group))
+                .then_with(|| left.1.tier.cmp(&right.1.tier))
+        });
+        matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, entry)| entry)
+            .collect()
     }
 
     pub fn pick<'s>(
@@ -405,14 +488,16 @@ fn feasible_required_layout(
     suffixes: usize,
     max_prefixes: usize,
     max_suffixes: usize,
+    prefix_cap: usize,
+    suffix_cap: usize,
     min_open_prefixes: usize,
     min_open_suffixes: usize,
 ) -> bool {
     if index == options.len() {
         return prefixes <= max_prefixes
             && suffixes <= max_suffixes
-            && 3usize.saturating_sub(prefixes) >= min_open_prefixes
-            && 3usize.saturating_sub(suffixes) >= min_open_suffixes;
+            && prefix_cap.saturating_sub(prefixes) >= min_open_prefixes
+            && suffix_cap.saturating_sub(suffixes) >= min_open_suffixes;
     }
     for slot in &options[index] {
         match slot {
@@ -424,6 +509,8 @@ fn feasible_required_layout(
                     suffixes,
                     max_prefixes,
                     max_suffixes,
+                    prefix_cap,
+                    suffix_cap,
                     min_open_prefixes,
                     min_open_suffixes,
                 ) {
@@ -438,6 +525,8 @@ fn feasible_required_layout(
                     suffixes + 1,
                     max_prefixes,
                     max_suffixes,
+                    prefix_cap,
+                    suffix_cap,
                     min_open_prefixes,
                     min_open_suffixes,
                 ) {
@@ -550,6 +639,15 @@ fn resolve_base(data: &PobData, spec: &BaseSpec) -> Result<(String, Vec<String>)
                 label = name.clone();
             }
             tags.extend(base.tags.iter().cloned());
+            for influence in &spec.influences {
+                let Some(tag) = base.influence_tags.get(influence.pob_key()) else {
+                    return Err(PoolError::InfluenceUnsupported {
+                        base: name.clone(),
+                        influence: influence.display().to_string(),
+                    });
+                };
+                tags.insert(tag.clone());
+            }
         }
         tags.extend(spec.tags.iter().cloned());
         return Ok((label, tags.into_iter().collect()));
@@ -643,7 +741,7 @@ impl PoolMod {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{AugmentMode, Goal, Method, Strategy};
+    use crate::plan::{AugmentMode, Goal, Influence, Method, Strategy};
     use crate::state::{CraftRarity, ItemState};
     use poe_data::{BaseItem, DataVersion, ModDomain, ModType, PobData};
 
@@ -653,6 +751,7 @@ mod tests {
             item_class: "Ring".to_string(),
             sub_type: None,
             tags: vec!["default".to_string(), "ring".to_string()],
+            influence_tags: BTreeMap::new(),
             implicit_mod_types: vec![],
             implicit_ids: vec![],
             level_req: None,
@@ -743,6 +842,8 @@ mod tests {
                 base_names: vec!["Test Ring".to_string()],
                 tags: vec![],
                 item_level: 86,
+                unrestricted: false,
+                influences: vec![],
             },
             goal: Goal {
                 min_prefixes: Some(1),
@@ -763,6 +864,70 @@ mod tests {
             },
             costs: Default::default(),
         }
+    }
+
+    #[test]
+    fn influence_selection_gates_influence_mods() {
+        let mut data = data();
+        data.bases[0]
+            .influence_tags
+            .insert("shaper".to_string(), "ring_shaper".to_string());
+        data.mods.push(Mod {
+            id: "ShaperLife".to_string(),
+            domain: ModDomain::Explicit,
+            mod_type: ModType::Prefix,
+            affix: "of the Shaper".to_string(),
+            stat_texts: vec!["+(20-30) to maximum Life".to_string()],
+            level: 80,
+            group: "ShaperLife".to_string(),
+            weight_keys: vec!["ring_shaper".to_string(), "default".to_string()],
+            weight_values: vec![1000, 0],
+            tags: vec![],
+            trade_hashes: vec![],
+            item_types: vec![],
+        });
+        let mut spec = plan().base;
+        spec.influences = vec![Influence::Shaper];
+        let pool = Pool::from_spec(&data, &spec).unwrap();
+        assert!(pool
+            .prefixes
+            .iter()
+            .any(|entry| entry.group == "ShaperLife"));
+        assert!(pool.base_tags.iter().any(|tag| tag == "ring_shaper"));
+
+        spec.influences.clear();
+        let pool = Pool::from_spec(&data, &spec).unwrap();
+        assert!(!pool
+            .prefixes
+            .iter()
+            .any(|entry| entry.group == "ShaperLife"));
+    }
+
+    #[test]
+    fn unrestricted_item_level_includes_all_tiers() {
+        let mut data = data();
+        data.mods.push(test_mod(
+            "HighLife",
+            ModType::Prefix,
+            "HighLife",
+            "Hale",
+            95,
+            "+(100-110) to maximum Life",
+            1000,
+        ));
+        let mut spec = plan().base;
+        let restricted = Pool::from_spec(&data, &spec).unwrap();
+        assert!(!restricted
+            .prefixes
+            .iter()
+            .any(|entry| entry.group == "HighLife"));
+
+        spec.unrestricted = true;
+        let unrestricted = Pool::from_spec(&data, &spec).unwrap();
+        assert!(unrestricted
+            .prefixes
+            .iter()
+            .any(|entry| entry.group == "HighLife"));
     }
 
     #[test]

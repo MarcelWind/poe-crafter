@@ -514,6 +514,7 @@ mod tests {
     use super::*;
     use crate::parse::parse_item;
     use poe_data::{BaseItem, DataVersion, Mod};
+    use std::collections::BTreeMap;
 
     fn synthetic_data() -> PobData {
         PobData {
@@ -591,10 +592,11 @@ mod tests {
                 },
             ],
             bases: vec![BaseItem {
-                name: "Phantom Boots".to_string(),
-                item_class: "Boots".to_string(),
-                sub_type: Some("Evasion".to_string()),
-                tags: vec!["boots".to_string(), "default".to_string()],
+                name: "Test Ring".to_string(),
+                item_class: "Ring".to_string(),
+                sub_type: None,
+                tags: vec!["default".to_string(), "ring".to_string()],
+                influence_tags: BTreeMap::new(),
                 implicit_mod_types: vec![],
                 implicit_ids: vec![],
                 level_req: None,

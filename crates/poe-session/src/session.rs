@@ -11,7 +11,10 @@ use std::time::Instant;
 use serde::Serialize;
 use thiserror::Error;
 
-use poe_craft::{evaluate, next_action, GoalEvaluation, NextAction, Plan};
+use poe_craft::{
+    evaluate, next_action, step_action_is_primary, Goal, GoalEvaluation, NextAction, PlanFile,
+    StepRunner,
+};
 use poe_data::PobData;
 use poe_item::{parse_item, ParsedItem, Rarity, Resolver};
 
@@ -70,6 +73,7 @@ impl SessionConfig {
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     GoalReached,
+    StepFailed,
     MaxSteps,
     MaxCurrencyActions,
     TimeBudget,
@@ -171,6 +175,9 @@ pub struct PreviewReport {
     pub min_score: i32,
     pub next_action: NextAction,
     pub currencies: Vec<Currency>,
+    pub step_index: Option<usize>,
+    pub step_name: Option<String>,
+    pub step_total: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,7 +235,9 @@ struct HeldCurrency {
 }
 
 pub struct CraftSession<'a> {
-    plan: Plan,
+    plan: PlanFile,
+    runner: StepRunner,
+    costs: poe_craft::Costs,
     resolver: Resolver<'a>,
     io: &'a mut dyn GameIo,
     config: SessionConfig,
@@ -241,7 +250,7 @@ pub struct CraftSession<'a> {
 
 impl<'a> CraftSession<'a> {
     pub fn new(
-        plan: Plan,
+        plan: PlanFile,
         data: &'a PobData,
         io: &'a mut dyn GameIo,
         config: SessionConfig,
@@ -249,8 +258,11 @@ impl<'a> CraftSession<'a> {
     ) -> Result<Self, SessionError> {
         config.validate()?;
         let resolver = Resolver::new(data);
+        let costs = *plan.costs();
         Ok(Self {
             plan,
+            runner: StepRunner::new(),
+            costs,
             resolver,
             io,
             config,
@@ -276,16 +288,94 @@ impl<'a> CraftSession<'a> {
         }
     }
 
+    fn prepare_steps(&mut self, state: &poe_craft::ItemState) {
+        if let PlanFile::Steps(build) = &self.plan {
+            self.runner.observe(build, state);
+        }
+    }
+
+    fn current_goal(&self) -> Option<&Goal> {
+        match &self.plan {
+            PlanFile::Legacy(plan) => Some(&plan.goal),
+            PlanFile::Steps(build) => {
+                if self.runner.finished {
+                    build.final_goal()
+                } else {
+                    self.runner.target_goal(build)
+                }
+            }
+        }
+    }
+
+    fn current_evaluation(&self, state: &poe_craft::ItemState) -> GoalEvaluation {
+        match self.current_goal() {
+            Some(goal) => evaluate(goal, state),
+            None => evaluate(&Goal::default(), state),
+        }
+    }
+
+    fn current_action(&mut self, state: &poe_craft::ItemState) -> NextAction {
+        match &self.plan {
+            PlanFile::Legacy(plan) => next_action(plan, state),
+            PlanFile::Steps(build) => self.runner.next_action(build, state),
+        }
+    }
+
+    fn after_action(&mut self, state: &poe_craft::ItemState, action: NextAction) {
+        if let PlanFile::Steps(build) = &self.plan {
+            let index = self.runner.current_step;
+            let primary = build
+                .steps
+                .get(index)
+                .is_some_and(|step| step_action_is_primary(step.action, action));
+            self.runner.after_action(build, state, primary);
+        }
+    }
+
+    fn step_info(&self) -> Option<(usize, String, usize)> {
+        match &self.plan {
+            PlanFile::Steps(build) => build.steps.get(self.runner.current_step).map(|step| {
+                (
+                    self.runner.current_step,
+                    step.name.clone(),
+                    build.steps.len(),
+                )
+            }),
+            PlanFile::Legacy(_) => None,
+        }
+    }
+
+    fn failed(&self) -> Option<String> {
+        self.runner.failed.clone()
+    }
+
+    fn is_finished(&self) -> bool {
+        matches!(self.plan, PlanFile::Steps(_)) && self.runner.finished
+    }
+
     pub fn preview(&mut self) -> Result<PreviewReport, SessionError> {
         self.check_gate()?;
-        let snapshot = self.read_snapshot()?;
-        let action = next_action(&self.plan, &snapshot.state);
+        let mut snapshot = self.read_snapshot()?;
+        self.prepare_steps(&snapshot.state);
+        snapshot.evaluation = self.current_evaluation(&snapshot.state);
+        let action = if self.is_finished() {
+            NextAction::Stop
+        } else {
+            self.current_action(&snapshot.state)
+        };
+        let (step_index, step_name, step_total) = match self.step_info() {
+            Some((index, name, total)) => (Some(index), Some(name), Some(total)),
+            None => (None, None, None),
+        };
         Ok(PreviewReport {
             item: snapshot.parsed,
             evaluation: snapshot.evaluation,
-            min_score: self.plan.goal.min_score,
+            min_score: self.current_goal().map(|goal| goal.min_score).unwrap_or(0),
             next_action: action,
             currencies: currencies_for(action),
+            step_index,
+            step_name,
+            step_total,
         })
     }
 
@@ -309,6 +399,8 @@ impl<'a> CraftSession<'a> {
         let start = Instant::now();
         self.check_gate()?;
         let mut current = self.read_snapshot()?;
+        self.prepare_steps(&current.state);
+        current.evaluation = self.current_evaluation(&current.state);
         let mut current_fingerprint = fingerprint(&current.text);
         self.emit(SessionProgress {
             kind: ProgressKind::Started,
@@ -327,10 +419,25 @@ impl<'a> CraftSession<'a> {
 
         loop {
             self.check_gate()?;
-            if current.evaluation.satisfied {
+            self.prepare_steps(&current.state);
+            current.evaluation = self.current_evaluation(&current.state);
+            if self.is_finished()
+                || (matches!(self.plan, PlanFile::Legacy(_)) && current.evaluation.satisfied)
+            {
                 return Ok(self.report(
                     true,
                     StopReason::GoalReached,
+                    start,
+                    steps,
+                    currency_actions,
+                    currency_used,
+                    &current,
+                ));
+            }
+            if self.failed().is_some() {
+                return Ok(self.report(
+                    false,
+                    StopReason::StepFailed,
                     start,
                     steps,
                     currency_actions,
@@ -376,12 +483,18 @@ impl<'a> CraftSession<'a> {
                 ));
             }
 
-            let action = next_action(&self.plan, &current.state);
+            let action = self.current_action(&current.state);
             let currencies = currencies_for(action);
             if currencies.is_empty() {
+                let success = self.is_finished()
+                    || (matches!(self.plan, PlanFile::Legacy(_)) && current.evaluation.satisfied);
                 return Ok(self.report(
-                    current.evaluation.satisfied,
-                    StopReason::GoalReached,
+                    success,
+                    if success {
+                        StopReason::GoalReached
+                    } else {
+                        StopReason::StepFailed
+                    },
                     start,
                     steps,
                     currency_actions,
@@ -410,10 +523,12 @@ impl<'a> CraftSession<'a> {
                 self.begin_held(currency)?;
                 self.use_held()?;
 
-                let after = self.read_snapshot()?;
+                let mut after = self.read_snapshot()?;
                 if after.identity != current.identity {
                     return Err(SessionError::ItemChanged);
                 }
+                self.after_action(&after.state, action);
+                after.evaluation = self.current_evaluation(&after.state);
                 let after_fingerprint = fingerprint(&after.text);
                 let item_changed = after_fingerprint != before_fingerprint;
                 if let Some(held) = self.held.as_mut() {
@@ -432,7 +547,7 @@ impl<'a> CraftSession<'a> {
 
                 currency_actions += 1;
                 *currency_used.entry(currency.key().to_string()).or_insert(0) += 1;
-                total_cost += currency.cost(&self.plan.costs);
+                total_cost += currency.cost(&self.costs);
 
                 if let Some(logger) = self.logger.as_mut() {
                     logger.write_event(&SessionEvent {
@@ -469,10 +584,23 @@ impl<'a> CraftSession<'a> {
                     self.end_held()?;
                 }
 
-                if current.evaluation.satisfied {
+                if self.is_finished()
+                    || (matches!(self.plan, PlanFile::Legacy(_)) && current.evaluation.satisfied)
+                {
                     return Ok(self.report(
                         true,
                         StopReason::GoalReached,
+                        start,
+                        steps,
+                        currency_actions,
+                        currency_used,
+                        &current,
+                    ));
+                }
+                if self.failed().is_some() {
+                    return Ok(self.report(
+                        false,
+                        StopReason::StepFailed,
                         start,
                         steps,
                         currency_actions,
@@ -500,6 +628,7 @@ impl<'a> CraftSession<'a> {
 
             self.end_held()?;
 
+            let last_currency = currencies.last().copied();
             for currency in currencies {
                 self.check_gate()?;
                 if currency_actions >= self.config.max_currency_actions {
@@ -533,10 +662,14 @@ impl<'a> CraftSession<'a> {
                     None
                 };
 
-                let after = self.read_snapshot()?;
+                let mut after = self.read_snapshot()?;
                 if after.identity != current.identity {
                     return Err(SessionError::ItemChanged);
                 }
+                if last_currency == Some(currency) {
+                    self.after_action(&after.state, action);
+                }
+                after.evaluation = self.current_evaluation(&after.state);
                 let after_fingerprint = fingerprint(&after.text);
                 let item_changed = after_fingerprint != before_fingerprint;
                 let mut warning = None;
@@ -578,7 +711,7 @@ impl<'a> CraftSession<'a> {
 
                 currency_actions += 1;
                 *currency_used.entry(currency.key().to_string()).or_insert(0) += 1;
-                total_cost += currency.cost(&self.plan.costs);
+                total_cost += currency.cost(&self.costs);
 
                 if let Some(logger) = self.logger.as_mut() {
                     logger.write_event(&SessionEvent {
@@ -608,10 +741,23 @@ impl<'a> CraftSession<'a> {
                 current = after;
                 current_fingerprint = after_fingerprint;
 
-                if current.evaluation.satisfied {
+                if self.is_finished()
+                    || (matches!(self.plan, PlanFile::Legacy(_)) && current.evaluation.satisfied)
+                {
                     return Ok(self.report(
                         true,
                         StopReason::GoalReached,
+                        start,
+                        steps,
+                        currency_actions,
+                        currency_used,
+                        &current,
+                    ));
+                }
+                if self.failed().is_some() {
+                    return Ok(self.report(
+                        false,
+                        StopReason::StepFailed,
                         start,
                         steps,
                         currency_actions,
@@ -740,7 +886,7 @@ impl<'a> CraftSession<'a> {
 
         let resolved = self.resolver.resolve_item(&parsed);
         let state = poe_craft::ItemState::from_resolved(&resolved);
-        let evaluation = evaluate(&self.plan.goal, &state);
+        let evaluation = self.current_evaluation(&state);
         let implicit_signature = resolved
             .item
             .implicit_groups()
@@ -823,6 +969,7 @@ fn fingerprint(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use poe_craft::Plan;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
@@ -868,6 +1015,7 @@ mod tests {
                 item_class: "Ring".to_string(),
                 sub_type: None,
                 tags: vec!["default".to_string(), "ring".to_string()],
+                influence_tags: BTreeMap::new(),
                 implicit_mod_types: vec![],
                 implicit_ids: vec![],
                 level_req: None,
@@ -880,9 +1028,10 @@ mod tests {
         }
     }
 
-    fn plan() -> Plan {
-        Plan::from_toml(
-            r#"
+    fn plan() -> PlanFile {
+        PlanFile::Legacy(
+            Plan::from_toml(
+                r#"
 schema = 1
 name = "session test"
 
@@ -902,6 +1051,39 @@ group = "Life"
 method = "alt_regal"
 max_attempts = 100
 regal_when_score = 1
+
+[costs]
+alt = 0.1
+transmute = 0.01
+"#,
+            )
+            .unwrap(),
+        )
+    }
+
+    fn step_plan() -> PlanFile {
+        PlanFile::from_toml(
+            r#"
+schema = 2
+name = "step session test"
+start = "normal"
+
+[base]
+item_class = "Ring"
+base_names = ["Test Ring"]
+item_level = 86
+
+[[steps]]
+name = "life"
+action = "alt"
+max_attempts = 100
+
+[steps.goal]
+min_prefixes = 1
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "Life"
 
 [costs]
 alt = 0.1
@@ -960,6 +1142,19 @@ transmute = 0.01
         assert_eq!(report.currency_used.get("alt"), Some(&1));
         assert_eq!(game.applied, vec![Currency::Alt]);
         assert_eq!(game.currencies.get(&Currency::Alt), Some(&9));
+    }
+
+    #[test]
+    fn step_plan_reaches_final_step() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(10));
+        let report = CraftSession::new(step_plan(), &data, &mut game, config(), None)
+            .unwrap()
+            .run()
+            .unwrap();
+        assert!(report.success);
+        assert_eq!(report.stop_reason, StopReason::GoalReached);
+        assert_eq!(report.currency_used.get("alt"), Some(&1));
     }
 
     #[test]
