@@ -17,6 +17,9 @@ use poe_session::{
 };
 use poe_timing::DelaySettings;
 
+const DATA_LOCK: &str = "data/pob-lock.json";
+const DATA_DIR: &str = "data/pob";
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -42,6 +45,8 @@ enum Tab {
 
 enum WorkerMessage {
     Doctor(Result<String, String>),
+    DataProgress(poe_data::DataProgress),
+    DataReady(Result<String, String>),
     Calibrated(Result<Calibration, String>),
     Inspected(Result<String, String>),
     PlanValidated(Result<String, String>),
@@ -123,6 +128,9 @@ impl PoEApp {
             hold_currency: true,
         };
         app.reload_calibration();
+        if !app.cache().exists() {
+            app.start_data_setup();
+        }
         app
     }
 
@@ -172,6 +180,28 @@ impl PoEApp {
                 WorkerMessage::Doctor(result) => {
                     self.busy = false;
                     self.doctor_output = result.unwrap_or_else(|error| error);
+                }
+                WorkerMessage::DataProgress(progress) => {
+                    self.status = format!(
+                        "Data {}/{}: {}{}",
+                        progress.completed,
+                        progress.total,
+                        progress.path,
+                        if progress.downloaded { "" } else { " (reused)" }
+                    );
+                }
+                WorkerMessage::DataReady(result) => {
+                    self.busy = false;
+                    match result {
+                        Ok(message) => {
+                            self.status = message.clone();
+                            self.doctor_output = message;
+                        }
+                        Err(error) => {
+                            self.status = format!("Data setup failed: {error}");
+                            self.doctor_output = error;
+                        }
+                    }
                 }
                 WorkerMessage::Calibrated(result) => {
                     self.busy = false;
@@ -247,6 +277,37 @@ impl PoEApp {
         thread::spawn(move || {
             let result = doctor_report(&cache, &calibration);
             let _ = sender.send(WorkerMessage::Doctor(result));
+        });
+    }
+
+    fn start_data_setup(&mut self) {
+        if self.cache().exists() {
+            self.status = "Data cache is already present.".to_string();
+            return;
+        }
+        self.busy = true;
+        self.status = "Data cache missing; fetching pinned data...".to_string();
+        let sender = self.sender.clone();
+        let progress_sender = sender.clone();
+        let cache = self.cache();
+        thread::spawn(move || {
+            let mut progress = |progress: poe_data::DataProgress| {
+                let _ = progress_sender.send(WorkerMessage::DataProgress(progress));
+            };
+            let result = poe_data::ensure_cache(
+                Path::new(DATA_LOCK),
+                Path::new(DATA_DIR),
+                &cache,
+                Some(&mut progress),
+            )
+            .map(|outcome| {
+                format!(
+                    "Data cache ready: {} files ({} downloaded, {} reused).",
+                    outcome.files, outcome.downloaded, outcome.skipped
+                )
+            })
+            .map_err(|error| error.to_string());
+            let _ = sender.send(WorkerMessage::DataReady(result));
         });
     }
 
@@ -449,6 +510,15 @@ impl PoEApp {
         ui.horizontal(|ui| {
             if ui.button("Refresh").clicked() {
                 self.start_doctor();
+            }
+            if ui
+                .add_enabled(
+                    !self.busy && !self.cache().exists(),
+                    egui::Button::new("Download data"),
+                )
+                .clicked()
+            {
+                self.start_data_setup();
             }
             if ui.button("Reload calibration").clicked() {
                 self.reload_calibration();

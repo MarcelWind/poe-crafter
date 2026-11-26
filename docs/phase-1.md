@@ -21,6 +21,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Data setup
 
+The CLI and UI now build the cache automatically when it is missing, using
+`data/pob-lock.json` and downloading only missing or invalid pinned files.
+The manual flow below remains available for offline/reviewed builds.
+
 Fetch the pinned PoB snapshot (paths mirror `src/Data`):
 
 ```

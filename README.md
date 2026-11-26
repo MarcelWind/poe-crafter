@@ -11,12 +11,8 @@ Service and ban risk. Test with `--dry-run` and `--once` first.
 ## Quick start
 
 ```powershell
-# Fetch and build the local PoB data cache.
-python tools/lock-pob-data.py --cache data/pob
-cargo run -p poe-cli -- data build `
-  --pob-dir data/pob `
-  --out target/poe-data.msgpack `
-  --lock data/pob-lock.json
+# Desktop UI. The first run downloads and builds the pinned data cache.
+cargo run -p poe-ui
 
 # Inspect an item and validate a plan.
 cargo run -p poe-cli -- inspect `
@@ -24,9 +20,27 @@ cargo run -p poe-cli -- inspect `
   samples/items/capture-20261126-123149-advanced-8.txt
 cargo run -p poe-cli -- plan validate `
   --plan plans/es-boots-alt.toml
+```
 
-# Desktop UI.
-cargo run -p poe-ui
+If `target/poe-data.msgpack` is missing, the CLI and UI automatically:
+
+1. Read `data/pob-lock.json`.
+2. Download missing pinned files from the locked Path of Building commit into
+   `data/pob`.
+3. Verify each file’s size and SHA-256.
+4. Import the data and write the cache.
+
+Existing valid files are reused, so an interrupted download resumes. An
+existing cache is never overwritten automatically; delete it to rebuild.
+
+Offline/manual builds remain available:
+
+```powershell
+python tools/lock-pob-data.py --cache data/pob
+cargo run -p poe-cli -- data build `
+  --pob-dir data/pob `
+  --out target/poe-data.msgpack `
+  --lock data/pob-lock.json
 ```
 
 The UI and CLI use `target/poe-data.msgpack`, `calibration.toml`, `delays.toml`,

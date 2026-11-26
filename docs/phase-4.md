@@ -14,6 +14,8 @@ Status: initial implementation. The UI compiles and exercises the same
   cancel flag.
 - The session releases held Shift on normal completion, errors, and
   cancellation.
+- Missing data caches are downloaded and built automatically by the CLI and UI;
+  files are verified against `data/pob-lock.json` before importing.
 
 ## UI tabs
 
@@ -30,8 +32,9 @@ focused automatically before the session starts.
 ## Panel guard
 
 Calibrate `panel` on a stable pixel of the open stash or inventory, not on the
-item or a currency slot. The tool samples that pixel through the game's client
-DC and compares it with the captured color within a tolerance.
+item or a currency slot. The tool samples that pixel from the composed desktop
+at client coordinates and compares it with the captured color within a
+tolerance.
 
 The guard is optional so existing calibrations keep working. When it is absent
 the UI shows a warning and the session falls back to item/clipboard checks. When
@@ -52,6 +55,14 @@ conservative runs.
 `CraftSession::set_cancel_flag` accepts an `Arc<AtomicBool>`. The gate checks it
 together with F12, foreground state, and preflight. The UI's Stop button sets
 the same flag.
+
+## Data setup
+
+On startup the UI checks `target/poe-data.msgpack`. If it is missing, a worker
+downloads the pinned files listed in `data/pob-lock.json` to `data/pob`, verifies
+size and SHA-256, imports them, and builds the cache. The Doctor tab shows
+progress and exposes a retry button. The CLI performs the same check before any
+command that needs item or plan data.
 
 ## Remaining work
 

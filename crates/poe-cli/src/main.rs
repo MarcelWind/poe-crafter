@@ -322,7 +322,7 @@ fn apply_lock(version: &mut DataVersion, path: &std::path::Path) -> Result<()> {
 }
 
 fn data_info(cache: &Path) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     println!("source:       {}", data.version.source);
     println!("commit:       {}", data.version.commit);
     println!("commit date:  {}", data.version.commit_date);
@@ -367,7 +367,7 @@ fn data_info(cache: &Path) -> Result<()> {
 }
 
 fn inspect(cache: &Path, item_path: &Path, all: bool, json: bool) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     let text = std::fs::read_to_string(item_path)
         .with_context(|| format!("reading item {}", item_path.display()))?;
     let item = parse_item(&text);
@@ -385,8 +385,39 @@ fn load_plan(path: &Path) -> Result<Plan> {
     Plan::load(path).with_context(|| format!("loading plan {}", path.display()))
 }
 
+fn load_data(cache: &Path) -> Result<poe_data::PobData> {
+    if cache.exists() {
+        return load_cache(cache).with_context(|| format!("loading cache {}", cache.display()));
+    }
+
+    let lock = Path::new("data/pob-lock.json");
+    let data_dir = Path::new("data/pob");
+    eprintln!(
+        "Data cache {} is missing; downloading pinned Path of Building data...",
+        cache.display()
+    );
+    let mut progress = |progress: poe_data::DataProgress| {
+        if progress.downloaded || progress.completed == progress.total {
+            eprintln!(
+                "Data {}/{}: {}{}",
+                progress.completed,
+                progress.total,
+                progress.path,
+                if progress.downloaded { "" } else { " (reused)" }
+            );
+        }
+    };
+    let outcome = poe_data::ensure_cache(lock, data_dir, cache, Some(&mut progress))
+        .with_context(|| format!("building data cache {}", cache.display()))?;
+    eprintln!(
+        "Data cache built: {} files, {} downloaded, {} reused",
+        outcome.files, outcome.downloaded, outcome.skipped
+    );
+    load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))
+}
+
 fn plan_validate(cache: &Path, plan_path: &Path) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     let plan = load_plan(plan_path)?;
     let simulator = Simulator::new(&data, plan).context("validating plan")?;
     print_plan_summary(&simulator.plan, &simulator.pool);
@@ -496,7 +527,7 @@ fn plan_simulate(
     max_total_attempts: u64,
     json: bool,
 ) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     let plan = load_plan(plan_path)?;
     let budget = (max_total_attempts > 0).then_some(max_total_attempts);
     let show_progress = !json && runs >= 100;
@@ -618,7 +649,7 @@ fn plan_base_warning(plan: &Plan, item: &poe_item::ParsedItem, pool: &Pool) -> O
 }
 
 fn plan_check(cache: &Path, plan_path: &Path, item_path: &Path, json: bool) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     let plan = load_plan(plan_path)?;
     let pool = Pool::from_plan(&data, &plan).context("validating plan against data")?;
     let text = std::fs::read_to_string(item_path)
@@ -695,7 +726,7 @@ fn plan_check(cache: &Path, plan_path: &Path, item_path: &Path, json: bool) -> R
 }
 
 fn plan_groups(cache: &Path, search: &str, limit: usize) -> Result<()> {
-    let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
+    let data = load_data(cache)?;
     let needle = search.to_ascii_lowercase();
     let mut groups: BTreeMap<String, GroupInfo> = BTreeMap::new();
 
@@ -906,8 +937,7 @@ fn print_calibration(calibration: &Calibration, path: &Path) {
 }
 
 fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
-    let data = load_cache(args.cache)
-        .with_context(|| format!("loading cache {}", args.cache.display()))?;
+    let data = load_data(args.cache)?;
     let plan = load_plan(args.plan)?;
     let path = calibration_path(args.calibration);
     let calibration = Calibration::load(&path)
