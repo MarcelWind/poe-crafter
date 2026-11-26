@@ -4,6 +4,8 @@ members = [
     "crates/poe-data",
     "crates/poe-item",
     "crates/poe-craft",
+    "crates/poe-session",
+    "crates/poe-input",
     "crates/poe-cli",
 ]
 

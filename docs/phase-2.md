@@ -202,6 +202,5 @@ mask for normal item sizes. Release timings on the development machine:
 
 ## Phase 3 entry
 
-Use the simulator to choose plans, then implement Win32 input with verified
-postconditions, calibration, budgets, and an emergency stop so a real craft
-session can run the same state machine safely.
+Phase 3 is implemented in `poe-session` and `poe-input`; see
+`docs/phase-3.md`.

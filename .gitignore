@@ -5,6 +5,11 @@
 /data/pob/
 *.msgpack
 
+# Local calibration and craft session logs (may contain item text)
+/calibration.toml
+/logs/
+*.jsonl
+
 # Python tooling
 __pycache__/
 *.py[cod]

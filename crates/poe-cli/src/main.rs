@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -7,7 +9,9 @@ use poe_craft::{
     evaluate, next_action, simulate_with_options, ItemState, Plan, Pool, Requirement, Simulator,
 };
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
+use poe_input::{Calibration, InputError, Win32Game};
 use poe_item::{parse_item, ResolvedItem, Resolver};
+use poe_session::{CraftSession, Currency, GameIo, IoError, SessionConfig, SessionLogger};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -45,6 +49,65 @@ enum Command {
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
+    },
+    /// Calibrate and run real crafting sessions.
+    Craft {
+        #[command(subcommand)]
+        command: CraftCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CraftCommand {
+    /// Show window, calibration, and clipboard status.
+    Doctor {
+        #[arg(long)]
+        calibration: Option<PathBuf>,
+    },
+    /// Capture a calibrated point by focusing the game and pressing F8.
+    Calibrate {
+        /// item, transmute, alt, aug, regal, alch, scour, or chaos.
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        calibration: Option<PathBuf>,
+        /// Print current calibration instead of capturing.
+        #[arg(long)]
+        list: bool,
+        /// Seconds to wait for the game and F8.
+        #[arg(long, default_value_t = 15)]
+        timeout_secs: u64,
+    },
+    /// Run a plan against the live game with postcondition verification.
+    Run {
+        #[arg(long, default_value = "target/poe-data.msgpack")]
+        cache: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        calibration: Option<PathBuf>,
+        /// Read the current item and recommend an action without clicking.
+        #[arg(long)]
+        dry_run: bool,
+        /// Stop after one plan step.
+        #[arg(long)]
+        once: bool,
+        /// Skip the interactive confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, default_value_t = 10_000)]
+        max_steps: u32,
+        #[arg(long, default_value_t = 3_600)]
+        max_seconds: u64,
+        #[arg(long)]
+        max_cost: Option<f64>,
+        #[arg(long, default_value = "logs")]
+        log_dir: PathBuf,
+        /// Disable currency count verification (item text is still checked).
+        #[arg(long)]
+        no_currency_verify: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -140,6 +203,47 @@ fn main() -> Result<()> {
             all,
             json,
         } => inspect(cache.as_path(), item.as_path(), all, json),
+        Command::Craft { command } => match command {
+            CraftCommand::Doctor { calibration } => craft_doctor(calibration.as_deref()),
+            CraftCommand::Calibrate {
+                target,
+                calibration,
+                list,
+                timeout_secs,
+            } => craft_calibrate(
+                target.as_deref(),
+                calibration.as_deref(),
+                list,
+                timeout_secs,
+            ),
+            CraftCommand::Run {
+                cache,
+                plan,
+                calibration,
+                dry_run,
+                once,
+                yes,
+                max_steps,
+                max_seconds,
+                max_cost,
+                log_dir,
+                no_currency_verify,
+                json,
+            } => craft_run(CraftRunArgs {
+                cache: &cache,
+                plan: &plan,
+                calibration: calibration.as_deref(),
+                dry_run,
+                once,
+                yes,
+                max_steps,
+                max_seconds,
+                max_cost,
+                log_dir: &log_dir,
+                verify_currency: !no_currency_verify,
+                json,
+            }),
+        },
         Command::Plan { command } => match command {
             PlanCommand::Validate { cache, plan } => plan_validate(cache.as_path(), plan.as_path()),
             PlanCommand::Simulate {
@@ -645,6 +749,365 @@ struct GroupInfo {
     max_level: i64,
     count: usize,
     example: String,
+}
+
+struct CraftRunArgs<'a> {
+    cache: &'a Path,
+    plan: &'a Path,
+    calibration: Option<&'a Path>,
+    dry_run: bool,
+    once: bool,
+    yes: bool,
+    max_steps: u32,
+    max_seconds: u64,
+    max_cost: Option<f64>,
+    log_dir: &'a Path,
+    verify_currency: bool,
+    json: bool,
+}
+
+fn calibration_path(arg: Option<&Path>) -> PathBuf {
+    arg.map(Path::to_path_buf)
+        .unwrap_or_else(Calibration::default_path)
+}
+
+fn craft_doctor(calibration_arg: Option<&Path>) -> Result<()> {
+    let path = calibration_path(calibration_arg);
+    let mut game = Win32Game::find("Path of Exile").context("finding game window")?;
+    let info = game.window_info()?;
+    println!("Window: {}", info.title);
+    println!(
+        "Client: {}x{} at {},{} (foreground: {})",
+        info.client_width, info.client_height, info.origin_x, info.origin_y, info.foreground
+    );
+    if info.client_width <= 0 || info.client_height <= 0 {
+        println!("Warning: client area is empty; is the game minimized?");
+    }
+    match game.clipboard_text() {
+        Ok(text) => println!("Clipboard: readable, {} chars", text.chars().count()),
+        Err(error) => println!("Clipboard: {error}"),
+    }
+    if path.exists() {
+        let calibration = Calibration::load(&path)?;
+        println!("Calibration: {}", path.display());
+        let missing = calibration.missing(Calibration::all_targets());
+        if missing.is_empty() {
+            println!("Targets: all calibrated");
+        } else {
+            println!("Missing targets: {}", missing.join(", "));
+        }
+    } else {
+        println!("Calibration: missing (expected {})", path.display());
+    }
+    println!("Emergency stop: F12");
+    Ok(())
+}
+
+fn craft_calibrate(
+    target: Option<&str>,
+    calibration_arg: Option<&Path>,
+    list: bool,
+    timeout_secs: u64,
+) -> Result<()> {
+    let path = calibration_path(calibration_arg);
+    let mut calibration = if path.exists() {
+        Calibration::load(&path)?
+    } else {
+        Calibration::empty()
+    };
+
+    if list || target.is_none() {
+        print_calibration(&calibration, &path);
+        if target.is_none() && !list {
+            println!();
+            println!("Run with --target <item|transmute|alt|aug|regal|alch|scour|chaos>.");
+            println!("Focus the game, hover the target slot, and press F8.");
+        }
+        return Ok(());
+    }
+
+    let target = target.unwrap();
+    if !Calibration::all_targets().contains(&target) {
+        anyhow::bail!(
+            "unknown calibration target `{target}`; expected one of {}",
+            Calibration::all_targets().join(", ")
+        );
+    }
+
+    let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+    let info = game.window_info()?;
+    calibration.set_capture_size(info.client_width, info.client_height);
+    println!(
+        "Focus {}, hover the {} slot, then press F8 within {}s.",
+        info.title, target, timeout_secs
+    );
+    let point = game
+        .capture_point(Duration::from_secs(timeout_secs))
+        .context("capturing calibration point")?;
+    calibration.set_target(target, point)?;
+    calibration.save(&path)?;
+    println!(
+        "saved {} at ({:.4}, {:.4}) to {}",
+        target,
+        point.x,
+        point.y,
+        path.display()
+    );
+    Ok(())
+}
+
+fn print_calibration(calibration: &Calibration, path: &Path) {
+    println!("Calibration: {}", path.display());
+    println!("Game title: {}", calibration.game_title);
+    for target in Calibration::all_targets() {
+        match calibration.point(target) {
+            Some(point) => println!("  {target:<10} ({:.4}, {:.4})", point.x, point.y),
+            None => println!("  {target:<10} missing"),
+        }
+    }
+}
+
+fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
+    let data = load_cache(args.cache)
+        .with_context(|| format!("loading cache {}", args.cache.display()))?;
+    let plan = load_plan(args.plan)?;
+    let path = calibration_path(args.calibration);
+    let calibration = Calibration::load(&path)
+        .with_context(|| format!("loading calibration {}", path.display()))?;
+    if calibration.item.is_none() {
+        anyhow::bail!("calibration item slot is missing; run `poe craft calibrate --target item`.");
+    }
+    if !args.dry_run {
+        let missing = calibration.missing(Calibration::all_targets());
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "calibration is incomplete; missing: {}. Run `poe craft calibrate --target ...`.",
+                missing.join(", ")
+            );
+        }
+    }
+
+    let game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+    if !game.is_foreground() {
+        println!("Game is not foreground; focus Path of Exile before starting.");
+    }
+    let mut io = WindowsGameIo { game, calibration };
+
+    let max_steps = if args.once || args.dry_run {
+        1
+    } else {
+        args.max_steps
+    };
+    let config = SessionConfig {
+        max_steps,
+        max_currency_actions: max_steps.saturating_mul(2).max(2),
+        max_seconds: args.max_seconds,
+        max_cost: args.max_cost,
+        max_same_fingerprint: 3,
+        pre_action_delay_ms: 100,
+        action_delay_ms: 250,
+        verify_currency: args.verify_currency,
+        require_foreground: true,
+    };
+
+    if args.dry_run {
+        let mut session =
+            CraftSession::new(plan, &data, &mut io, config, None).context("creating session")?;
+        let preview = session.preview().context("reading current item")?;
+        print_preview(&preview);
+        return Ok(());
+    }
+
+    println!("Warning: this sends real mouse clicks to Path of Exile.");
+    println!(
+        "Emergency stop: F12. Keep the stash/inventory open and the item in the calibrated slot."
+    );
+    if !args.yes && !confirm_start()? {
+        println!("cancelled");
+        return Ok(());
+    }
+
+    println!("Focus Path of Exile; starting in 3 seconds.");
+    std::thread::sleep(Duration::from_secs(3));
+    io.game
+        .require_foreground()
+        .context("Path of Exile is not foreground")?;
+
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let log_path = args.log_dir.join(format!("session-{epoch}.jsonl"));
+    let logger = SessionLogger::create(&log_path)?;
+    let mut session = CraftSession::new(plan, &data, &mut io, config, Some(logger))
+        .context("creating session")?;
+    let report = session.run();
+    match report {
+        Ok(report) => {
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                print_session_report(&report);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("session stopped: {error}");
+            Err(error.into())
+        }
+    }
+}
+
+fn print_preview(preview: &poe_session::PreviewReport) {
+    println!(
+        "Item: {} / {} | {:?}",
+        preview.item.item_class.as_deref().unwrap_or("?"),
+        preview.item.name.as_deref().unwrap_or("?"),
+        preview.item.rarity
+    );
+    println!(
+        "Goal: {} | score {}/{} | required {}/{}",
+        if preview.evaluation.satisfied {
+            "satisfied"
+        } else {
+            "not satisfied"
+        },
+        preview.evaluation.score,
+        preview.min_score,
+        preview.evaluation.required_matched,
+        preview.evaluation.required_total
+    );
+    println!("Next: {}", preview.next_action);
+    if !preview.currencies.is_empty() {
+        println!(
+            "Currencies: {}",
+            preview
+                .currencies
+                .iter()
+                .map(|currency| currency.label())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+}
+
+fn print_session_report(report: &poe_session::SessionReport) {
+    println!(
+        "Session: {} ({:?})",
+        if report.success { "success" } else { "stopped" },
+        report.stop_reason
+    );
+    println!(
+        "Steps: {} | currency actions: {} | elapsed: {:.1}s",
+        report.steps, report.currency_actions, report.elapsed_seconds
+    );
+    if report.currency_used.is_empty() {
+        println!("Currency used: none");
+    } else {
+        println!(
+            "Currency used: {}",
+            report
+                .currency_used
+                .iter()
+                .map(|(currency, count)| format!("{currency} {count}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    println!(
+        "Final item: {} / {} | goal: {}",
+        report.final_item.item_class.as_deref().unwrap_or("?"),
+        report.final_item.name.as_deref().unwrap_or("?"),
+        if report.final_evaluation.satisfied {
+            "satisfied"
+        } else {
+            "not satisfied"
+        }
+    );
+    if let Some(path) = &report.log_path {
+        println!("Log: {}", path.display());
+    }
+}
+
+fn confirm_start() -> Result<bool> {
+    print!("Type YES to start: ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().eq_ignore_ascii_case("yes"))
+}
+
+struct WindowsGameIo {
+    game: Win32Game,
+    calibration: Calibration,
+}
+
+impl GameIo for WindowsGameIo {
+    fn window_info(&mut self) -> std::result::Result<poe_session::WindowInfo, IoError> {
+        let info = self.game.window_info().map_err(map_input)?;
+        Ok(poe_session::WindowInfo {
+            title: info.title,
+            client_width: info.client_width,
+            client_height: info.client_height,
+            foreground: info.foreground,
+        })
+    }
+
+    fn is_foreground(&mut self) -> std::result::Result<bool, IoError> {
+        Ok(self.game.is_foreground())
+    }
+
+    fn emergency_stop(&mut self) -> bool {
+        self.game.emergency_stop()
+    }
+
+    fn read_item(&mut self) -> std::result::Result<String, IoError> {
+        let item = self
+            .calibration
+            .item
+            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
+        self.game.read_item(item).map_err(map_input)
+    }
+
+    fn read_currency(&mut self, currency: Currency) -> std::result::Result<u32, IoError> {
+        let point = self
+            .calibration
+            .point(currency.key())
+            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
+        self.game.read_currency(point).map_err(map_input)
+    }
+
+    fn apply_currency(&mut self, currency: Currency) -> std::result::Result<(), IoError> {
+        let point = self
+            .calibration
+            .point(currency.key())
+            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
+        let item = self
+            .calibration
+            .item
+            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
+        self.game.apply_currency(point, item).map_err(map_input)
+    }
+
+    fn sleep(&mut self, millis: u64) {
+        std::thread::sleep(Duration::from_millis(millis));
+    }
+}
+
+fn map_input(error: InputError) -> IoError {
+    match error {
+        InputError::WindowNotFound => IoError::WindowNotFound,
+        InputError::NotForeground => IoError::NotForeground,
+        InputError::EmptyClientArea => IoError::Input("window client area is empty".to_string()),
+        InputError::PointOutsideWindow => {
+            IoError::Input("calibration point is outside the window".to_string())
+        }
+        InputError::MissingCalibration(target) => IoError::MissingCalibration(target),
+        InputError::Clipboard(message) => IoError::Clipboard(message),
+        InputError::Input(message) => IoError::Input(message),
+        InputError::Timeout(message) => IoError::Timeout(message),
+        InputError::Cancelled => IoError::Cancelled,
+    }
 }
 
 fn print_resolved(resolved: &ResolvedItem, all: bool) {
