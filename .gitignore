@@ -26,3 +26,6 @@ __pycache__/
 /advanced stash helper/resources/dll/
 /advanced stash helper/resources/data/
 /advanced stash helper/resources/images/
+
+# Agent
+/.kilo

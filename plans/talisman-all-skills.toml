@@ -1,0 +1,53 @@
+schema = 2
+name = "Talisman-All-Skills"
+start = "magic"
+
+[base]
+item_class = "Amulet"
+base_names = ["Croaker Talisman"]
+tags = []
+item_level = 85
+unrestricted = false
+influences = [
+    "hunter",
+    "crusader",
+]
+
+[options]
+confidence = 0.9
+magic_mod_weights = [
+    1.0,
+    1.0,
+]
+rare_mod_weights = [
+    8.0,
+    3.0,
+    1.0,
+]
+
+[[steps]]
+name = "Alt"
+action = "alt_aug"
+on_fail = "continue"
+max_attempts = 10000
+augment = "if_needed"
+
+[steps.goal]
+min_prefixes = 1
+weighted = []
+min_score = 0
+
+[[steps.goal.required]]
+slot = "prefix"
+group = "GlobalSkillGemLevel"
+value_index = 0
+weight = 1
+
+[costs]
+transmute = 0.0
+alt = 0.0
+aug = 0.0
+regal = 0.0
+alch = 0.0
+scour = 0.0
+chaos = 0.0
