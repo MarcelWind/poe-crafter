@@ -23,8 +23,6 @@ pub struct SessionConfig {
     pub max_seconds: u64,
     pub max_cost: Option<f64>,
     pub max_same_fingerprint: u32,
-    pub pre_action_delay_ms: u64,
-    pub action_delay_ms: u64,
     pub verify_currency: bool,
     pub hold_currency: bool,
     pub require_foreground: bool,
@@ -38,8 +36,6 @@ impl Default for SessionConfig {
             max_seconds: 3_600,
             max_cost: None,
             max_same_fingerprint: 3,
-            pre_action_delay_ms: 100,
-            action_delay_ms: 250,
             verify_currency: true,
             hold_currency: true,
             require_foreground: true,
@@ -360,9 +356,7 @@ impl<'a> CraftSession<'a> {
                 let before_text = current.text.clone();
                 let before_fingerprint = current_fingerprint;
                 self.begin_held(currency)?;
-                self.wait(self.config.pre_action_delay_ms)?;
                 self.use_held()?;
-                self.wait(self.config.action_delay_ms)?;
 
                 let after = self.read_snapshot()?;
                 if after.identity != current.identity {
@@ -469,9 +463,7 @@ impl<'a> CraftSession<'a> {
                     return Err(SessionError::CurrencyMissing { currency });
                 }
 
-                self.wait(self.config.pre_action_delay_ms)?;
                 self.io.apply_currency(currency)?;
-                self.wait(self.config.action_delay_ms)?;
 
                 let currency_after = if self.config.verify_currency {
                     Some(self.io.read_currency(currency)?)
@@ -712,17 +704,6 @@ impl<'a> CraftSession<'a> {
         Ok(())
     }
 
-    fn wait(&mut self, millis: u64) -> Result<(), SessionError> {
-        let mut remaining = millis;
-        while remaining > 0 {
-            self.check_gate()?;
-            let step = remaining.min(50);
-            self.io.sleep(step);
-            remaining -= step;
-        }
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn report(
         &self,
@@ -855,8 +836,6 @@ transmute = 0.01
             max_seconds: 60,
             max_cost: None,
             max_same_fingerprint: 3,
-            pre_action_delay_ms: 0,
-            action_delay_ms: 0,
             verify_currency: true,
             hold_currency: true,
             require_foreground: true,

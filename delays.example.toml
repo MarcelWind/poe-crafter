@@ -1,0 +1,9 @@
+# Delay between client actions (currency pickup -> item click, and between
+# consecutive item applications). Sampled from a Gaussian distribution and
+# clamped to min_ms..=max_ms. Copy this file to delays.toml to customize it.
+
+[action]
+mean_ms = 60
+deviation_ms = 10
+min_ms = 50
+max_ms = 70

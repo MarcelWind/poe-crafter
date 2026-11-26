@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/poe-data",
     "crates/poe-item",
+    "crates/poe-timing",
     "crates/poe-craft",
     "crates/poe-session",
     "crates/poe-input",

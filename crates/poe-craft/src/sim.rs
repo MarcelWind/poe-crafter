@@ -10,8 +10,8 @@ use poe_data::PobData;
 use crate::eval::{evaluate, GoalEvaluation};
 use crate::plan::{AugmentMode, Costs, Method, Plan, StartRarity};
 use crate::pool::{Pool, PoolError};
-use crate::rng::Rng;
 use crate::state::{CraftRarity, ItemState, StateMod};
+use poe_timing::Rng;
 
 #[derive(Debug, Error)]
 pub enum SimError {

@@ -197,6 +197,7 @@ dependencies = [
  "poe-input",
  "poe-item",
  "poe-session",
+ "poe-timing",
  "serde",
  "serde_json",
 ]
@@ -207,6 +208,7 @@ version = "0.1.0"
 dependencies = [
  "poe-data",
  "poe-item",
+ "poe-timing",
  "serde",
  "thiserror",
  "toml",
@@ -227,6 +229,7 @@ name = "poe-input"
 version = "0.1.0"
 dependencies = [
  "clipboard-win",
+ "poe-timing",
  "serde",
  "thiserror",
  "toml",
@@ -252,6 +255,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "poe-timing"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "toml",
 ]
 
 [[package]]

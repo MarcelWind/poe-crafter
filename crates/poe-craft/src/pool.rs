@@ -7,8 +7,8 @@ use poe_item::normalize_mod_text;
 use thiserror::Error;
 
 use crate::plan::{BaseSpec, Plan, Requirement, Slot};
-use crate::rng::Rng;
 use crate::state::StateMod;
+use poe_timing::Rng;
 
 #[derive(Debug, Error)]
 pub enum PoolError {

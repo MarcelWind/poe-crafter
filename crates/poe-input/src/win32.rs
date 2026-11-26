@@ -4,6 +4,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use clipboard_win::{get_clipboard_string, set_clipboard_string};
+use poe_timing::{DelayProfile, DelaySettings, Rng};
 use thiserror::Error;
 use winapi::shared::minwindef::{BOOL, DWORD, LPARAM, TRUE};
 use winapi::shared::windef::{HWND, POINT, RECT};
@@ -25,7 +26,12 @@ use crate::calibration::NormPoint;
 const WINDOW_TITLE_BUFFER: usize = 512;
 const VK_C_KEY: u32 = 0x43;
 const CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(2_500);
+const MOVE_SETTLE: Duration = Duration::from_millis(20);
+const CLICK_SETTLE: Duration = Duration::from_millis(20);
+const POST_CLICK_SETTLE: Duration = Duration::from_millis(150);
+const KEY_SETTLE: Duration = Duration::from_millis(10);
 const CLIPBOARD_POLL: Duration = Duration::from_millis(60);
+const HOLD_SETTLE: Duration = Duration::from_millis(80);
 
 #[derive(Debug, Error)]
 pub enum InputError {
@@ -109,6 +115,8 @@ unsafe fn process_matches(hwnd: HWND) -> bool {
 pub struct Win32Game {
     hwnd: HWND,
     title: String,
+    action_delay: DelayProfile,
+    rng: Rng,
 }
 
 impl Drop for Win32Game {
@@ -142,7 +150,24 @@ impl Win32Game {
         } else {
             title_substring.to_string()
         };
-        Ok(Self { hwnd, title })
+        Ok(Self {
+            hwnd,
+            title,
+            action_delay: DelaySettings::default().action,
+            rng: Rng::from_entropy(),
+        })
+    }
+
+    pub fn set_action_delay(&mut self, profile: DelayProfile) {
+        self.action_delay = profile;
+    }
+
+    /// Delay before the next client mouse action.
+    fn wait_between_actions(&mut self) {
+        let millis = self.action_delay.sample(&mut self.rng);
+        if millis > 0 {
+            sleep(Duration::from_millis(millis));
+        }
     }
 
     pub fn window_info(&self) -> Result<WindowInfo, InputError> {
@@ -244,7 +269,7 @@ impl Win32Game {
         // Advanced Mod Descriptions is enabled, so Ctrl+C already includes the
         // affix headers, tiers, and roll ranges.
         self.clear_clipboard()?;
-        send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
+        self.send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
         self.wait_for_clipboard(looks_like_equipment_text)
     }
 
@@ -260,7 +285,7 @@ impl Win32Game {
         self.move_to(point)?;
         self.require_foreground()?;
         self.clear_clipboard()?;
-        send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
+        self.send_key_combo(&[VK_CONTROL as u32, VK_C_KEY])?;
         let deadline = Instant::now() + CLIPBOARD_TIMEOUT;
         while Instant::now() < deadline {
             if self.emergency_stop() {
@@ -289,11 +314,11 @@ impl Win32Game {
     pub fn begin_hold(&mut self, currency_point: NormPoint) -> Result<(), InputError> {
         self.require_foreground()?;
         self.move_to(currency_point)?;
-        sleep(Duration::from_millis(100));
+        sleep(CLICK_SETTLE);
         self.mouse_click(false)?;
-        sleep(Duration::from_millis(200));
+        sleep(HOLD_SETTLE);
         send_key(VK_SHIFT as u32, false)?;
-        sleep(Duration::from_millis(100));
+        sleep(KEY_SETTLE);
         if self.emergency_stop() {
             let _ = send_key(VK_SHIFT as u32, true);
             return Err(InputError::Cancelled);
@@ -304,15 +329,15 @@ impl Win32Game {
     pub fn use_held(&mut self, item_point: NormPoint) -> Result<(), InputError> {
         self.require_foreground()?;
         self.move_to(item_point)?;
-        sleep(Duration::from_millis(100));
+        self.wait_between_actions();
         self.mouse_click(true)?;
-        sleep(Duration::from_millis(350));
+        sleep(POST_CLICK_SETTLE);
         Ok(())
     }
 
     pub fn end_hold(&mut self) -> Result<(), InputError> {
         send_key(VK_SHIFT as u32, true)?;
-        sleep(Duration::from_millis(200));
+        sleep(HOLD_SETTLE);
         Ok(())
     }
 
@@ -334,17 +359,17 @@ impl Win32Game {
         item_point: NormPoint,
     ) -> Result<(), InputError> {
         self.move_to(currency_point)?;
-        sleep(Duration::from_millis(100));
+        sleep(CLICK_SETTLE);
         self.mouse_click(false)?;
-        sleep(Duration::from_millis(200));
+        self.wait_between_actions();
         if self.emergency_stop() {
             return Err(InputError::Cancelled);
         }
 
         self.move_to(item_point)?;
-        sleep(Duration::from_millis(100));
+        sleep(MOVE_SETTLE);
         self.mouse_click(true)?;
-        sleep(Duration::from_millis(350));
+        sleep(POST_CLICK_SETTLE);
         if self.emergency_stop() {
             return Err(InputError::Cancelled);
         }
@@ -383,14 +408,14 @@ impl Win32Game {
         get_clipboard_string().map_err(|error| InputError::Clipboard(error.to_string()))
     }
 
-    fn move_to(&self, point: NormPoint) -> Result<(), InputError> {
+    fn move_to(&mut self, point: NormPoint) -> Result<(), InputError> {
         let (width, height, origin_x, origin_y) = self.client_rect()?;
         let (x, y) = point.to_screen(origin_x, origin_y, width, height);
         if x < origin_x || y < origin_y || x >= origin_x + width || y >= origin_y + height {
             return Err(InputError::PointOutsideWindow);
         }
         set_cursor(x, y)?;
-        sleep(Duration::from_millis(60));
+        sleep(MOVE_SETTLE);
         let current = cursor_pos()?;
         if current.x != x || current.y != y {
             return Err(InputError::Input(
@@ -400,7 +425,7 @@ impl Win32Game {
         Ok(())
     }
 
-    fn mouse_click(&self, left: bool) -> Result<(), InputError> {
+    fn mouse_click(&mut self, left: bool) -> Result<(), InputError> {
         self.require_foreground()?;
         let (down, up) = if left {
             (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
@@ -408,7 +433,7 @@ impl Win32Game {
             (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
         };
         send_mouse(down)?;
-        sleep(Duration::from_millis(20));
+        sleep(CLICK_SETTLE);
         send_mouse(up)
     }
 
@@ -480,16 +505,18 @@ fn send_key(vk: u32, up: bool) -> Result<(), InputError> {
     send_input(&input)
 }
 
-fn send_key_combo(keys: &[u32]) -> Result<(), InputError> {
-    for key in keys {
-        send_key(*key, false)?;
-        sleep(Duration::from_millis(8));
+impl Win32Game {
+    fn send_key_combo(&mut self, keys: &[u32]) -> Result<(), InputError> {
+        for key in keys {
+            send_key(*key, false)?;
+            sleep(KEY_SETTLE);
+        }
+        for key in keys.iter().rev() {
+            send_key(*key, true)?;
+            sleep(KEY_SETTLE);
+        }
+        Ok(())
     }
-    for key in keys.iter().rev() {
-        send_key(*key, true)?;
-        sleep(Duration::from_millis(8));
-    }
-    Ok(())
 }
 
 fn send_input(input: &INPUT) -> Result<(), InputError> {

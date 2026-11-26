@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 poe-data = { path = "../poe-data" }
 poe-item = { path = "../poe-item" }
+poe-timing = { path = "../poe-timing" }
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true

@@ -16,5 +16,6 @@ poe-data = { path = "../poe-data" }
 poe-input = { path = "../poe-input" }
 poe-item = { path = "../poe-item" }
 poe-session = { path = "../poe-session" }
+poe-timing = { path = "../poe-timing" }
 serde.workspace = true
 serde_json.workspace = true

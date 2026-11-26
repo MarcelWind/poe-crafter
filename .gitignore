@@ -5,8 +5,9 @@
 /data/pob/
 *.msgpack
 
-# Local calibration and craft session logs (may contain item text)
+# Local calibration, delay profile, and craft session logs
 /calibration.toml
+/delays.toml
 /logs/
 *.jsonl
 

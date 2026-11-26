@@ -104,8 +104,8 @@ action without clicking. It only requires the item slot calibration.
 
 Useful flags:
 
-- `--pre-delay-ms` (default 400) and `--action-delay-ms` (default 800) slow
-  down interaction and give the game time to update.
+- `--delays delays.toml` selects a Gaussian delay profile; built-in defaults
+  are used when the file is absent.
 - `--max-seconds` and `--max-cost` bound a run.
 - `--no-currency-verify` disables stack-count checks; item text is still
   verified, but this is less safe.
@@ -128,6 +128,31 @@ No extra click is sent to the currency slot after applying. Clicking it again
 would pick the remaining stack back up and leave it attached to the cursor.
 Use `--no-hold-currency` to fall back to re-picking the currency for every use.
 Validate the interaction with `--once` before a long run.
+
+## Random delays
+
+One delay profile controls the pause between client actions:
+
+- after picking up the currency and before clicking the item;
+- between consecutive applications of the held currency.
+
+Copy `delays.example.toml` to `delays.toml` and pass it with
+`--delays delays.toml`. The default is:
+
+```toml
+[action]
+mean_ms = 60
+deviation_ms = 10
+min_ms = 50
+max_ms = 70
+```
+
+Delay samples are Gaussian and clamped to `min_ms..=max_ms`, so 60ms with 10ms
+deviation stays within 50-70ms. Set `deviation_ms = 0` for a fixed delay.
+`delays.toml` is local and git-ignored; the example file is tracked.
+
+Small fixed settle times remain around mouse movement, button down/up, key
+presses, and clipboard polling; they are not part of the between-action delay.
 
 ## Emergency stop and failure behavior
 

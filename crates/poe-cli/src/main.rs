@@ -11,6 +11,7 @@ use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
 use poe_input::{Calibration, InputError, Win32Game};
 use poe_item::{parse_item, ResolvedItem, Resolver};
 use poe_session::{CraftSession, Currency, GameIo, IoError, SessionConfig, SessionLogger};
+use poe_timing::DelaySettings;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -93,12 +94,9 @@ enum CraftCommand {
         once: bool,
         #[arg(long, default_value_t = 10_000)]
         max_steps: u32,
-        /// Delay before a currency action, in milliseconds.
-        #[arg(long, default_value_t = 400)]
-        pre_delay_ms: u64,
-        /// Delay after a currency action before verification, in milliseconds.
-        #[arg(long, default_value_t = 800)]
-        action_delay_ms: u64,
+        /// Delay profile TOML; defaults are used if the file is absent.
+        #[arg(long, default_value = "delays.toml")]
+        delays: PathBuf,
         #[arg(long, default_value_t = 3_600)]
         max_seconds: u64,
         #[arg(long)]
@@ -228,8 +226,7 @@ fn main() -> Result<()> {
                 dry_run,
                 once,
                 max_steps,
-                pre_delay_ms,
-                action_delay_ms,
+                delays,
                 max_seconds,
                 max_cost,
                 log_dir,
@@ -243,8 +240,7 @@ fn main() -> Result<()> {
                 dry_run,
                 once,
                 max_steps,
-                pre_delay_ms,
-                action_delay_ms,
+                delays: &delays,
                 max_seconds,
                 max_cost,
                 log_dir: &log_dir,
@@ -767,8 +763,7 @@ struct CraftRunArgs<'a> {
     dry_run: bool,
     once: bool,
     max_steps: u32,
-    pre_delay_ms: u64,
-    action_delay_ms: u64,
+    delays: &'a Path,
     max_seconds: u64,
     max_cost: Option<f64>,
     log_dir: &'a Path,
@@ -898,7 +893,12 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
         }
     }
 
-    let game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+    let delays = DelaySettings::load_or_default(args.delays)
+        .with_context(|| format!("loading delay profile {}", args.delays.display()))?;
+    print_delays(&delays, args.delays);
+
+    let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
+    game.set_action_delay(delays.action);
     let mut io = WindowsGameIo { game, calibration };
 
     let max_steps = if args.once || args.dry_run {
@@ -912,8 +912,6 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
         max_seconds: args.max_seconds,
         max_cost: args.max_cost,
         max_same_fingerprint: 3,
-        pre_action_delay_ms: args.pre_delay_ms,
-        action_delay_ms: args.action_delay_ms,
         verify_currency: args.verify_currency,
         hold_currency: args.hold_currency,
         require_foreground: true,
@@ -963,6 +961,21 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
             Err(error.into())
         }
     }
+}
+
+fn print_delays(delays: &DelaySettings, path: &Path) {
+    if path.exists() {
+        println!("Delays: {}", path.display());
+    } else {
+        println!("Delays: built-in defaults (create {})", path.display());
+    }
+    println!(
+        "  action     {:.0}ms +/- {:.0}ms (clamped {}..={}ms)",
+        delays.action.mean_ms,
+        delays.action.deviation_ms,
+        delays.action.min_ms,
+        delays.action.max_ms
+    );
 }
 
 fn print_preview(preview: &poe_session::PreviewReport) {
