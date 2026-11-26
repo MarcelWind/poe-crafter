@@ -26,6 +26,8 @@ pub enum IoError {
     Timeout(String),
     #[error("unsupported game state: {0}")]
     Unsupported(String),
+    #[error("preflight failed: {0}")]
+    Preflight(String),
     #[error("cancelled")]
     Cancelled,
 }
@@ -34,6 +36,11 @@ pub trait GameIo {
     fn window_info(&mut self) -> Result<WindowInfo, IoError>;
     fn is_foreground(&mut self) -> Result<bool, IoError>;
     fn emergency_stop(&mut self) -> bool;
+
+    /// Optional safety checks that must pass before any client action.
+    fn preflight(&mut self) -> Result<(), IoError> {
+        Ok(())
+    }
 
     /// Read the item under the calibrated item slot using advanced copy.
     fn read_item(&mut self) -> Result<String, IoError>;

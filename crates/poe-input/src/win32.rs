@@ -11,17 +11,18 @@ use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::um::handleapi::CloseHandle;
 use winapi::um::processthreadsapi::{GetCurrentThreadId, OpenProcess};
 use winapi::um::winbase::QueryFullProcessImageNameW;
+use winapi::um::wingdi::{GetPixel, CLR_INVALID};
 use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 use winapi::um::winuser::{
     AttachThreadInput, BringWindowToTop, ClientToScreen, EnumWindows, GetAsyncKeyState,
-    GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, SendInput, SetCursorPos, SetForegroundWindow, SetProcessDPIAware,
-    ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-    MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_SHIFT,
+    GetClientRect, GetCursorPos, GetDC, GetForegroundWindow, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, ReleaseDC, SendInput, SetCursorPos,
+    SetForegroundWindow, SetProcessDPIAware, ShowWindow, INPUT, INPUT_KEYBOARD, INPUT_MOUSE,
+    KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN,
+    MOUSEEVENTF_RIGHTUP, MOUSEINPUT, SW_RESTORE, VK_CONTROL, VK_F12, VK_F8, VK_SHIFT,
 };
 
-use crate::calibration::NormPoint;
+use crate::calibration::{Color, NormPoint, PanelGuard};
 
 const WINDOW_TITLE_BUFFER: usize = 512;
 const VK_C_KEY: u32 = 0x43;
@@ -51,6 +52,8 @@ pub enum InputError {
     Input(String),
     #[error("timed out waiting for {0}")]
     Timeout(String),
+    #[error("panel guard failed: expected {expected:?}, sampled {actual:?}")]
+    PanelGuard { expected: Color, actual: Color },
     #[error("cancelled")]
     Cancelled,
 }
@@ -196,6 +199,40 @@ impl Win32Game {
 
     pub fn emergency_stop(&self) -> bool {
         key_down(VK_F12)
+    }
+
+    /// Sample one client-area pixel from the composed desktop. Sampling the
+    /// window DC directly can return black or stale pixels for accelerated
+    /// game windows, so this uses screen coordinates instead.
+    pub fn sample_color(&self, point: NormPoint) -> Result<Color, InputError> {
+        let (width, height, origin_x, origin_y) = self.client_rect()?;
+        let x = origin_x + (point.x * width.max(1) as f32).round() as i32;
+        let y = origin_y + (point.y * height.max(1) as f32).round() as i32;
+        let screen = null_mut();
+        let dc = unsafe { GetDC(screen) };
+        if dc.is_null() {
+            return Err(InputError::Input("GetDC failed".to_string()));
+        }
+        let value = unsafe { GetPixel(dc, x, y) };
+        unsafe {
+            ReleaseDC(screen, dc);
+        }
+        if value == CLR_INVALID {
+            return Err(InputError::Input("GetPixel failed".to_string()));
+        }
+        Ok(Color::from_bgr(value))
+    }
+
+    pub fn verify_panel(&self, guard: PanelGuard) -> Result<(), InputError> {
+        let actual = self.sample_color(guard.point)?;
+        if guard.matches(actual) {
+            Ok(())
+        } else {
+            Err(InputError::PanelGuard {
+                expected: guard.color,
+                actual,
+            })
+        }
     }
 
     /// Bring the game window to the foreground. The CLI process is normally the

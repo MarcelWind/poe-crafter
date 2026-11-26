@@ -4,6 +4,8 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
@@ -88,6 +90,27 @@ pub struct SessionReport {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressKind {
+    Started,
+    Applied,
+}
+
+/// A live session update for a UI or another observer.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionProgress {
+    pub kind: ProgressKind,
+    pub step: u32,
+    pub currency_actions: u32,
+    pub currency: Option<Currency>,
+    pub evaluation: Option<GoalEvaluation>,
+    pub elapsed_seconds: f64,
+    pub warning: Option<String>,
+}
+
+pub type ProgressSink = Box<dyn FnMut(SessionProgress)>;
+
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error(transparent)]
@@ -116,6 +139,8 @@ pub enum SessionError {
     NoProgress { count: u32 },
     #[error("emergency stop")]
     EmergencyStop,
+    #[error("cancelled")]
+    Cancelled,
     #[error("game lost foreground")]
     FocusLost,
     #[error("session log error: {0}")]
@@ -210,6 +235,8 @@ pub struct CraftSession<'a> {
     logger: Option<SessionLogger>,
     warnings: Vec<String>,
     held: Option<HeldCurrency>,
+    progress: Option<ProgressSink>,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> CraftSession<'a> {
@@ -230,7 +257,23 @@ impl<'a> CraftSession<'a> {
             logger,
             warnings: Vec::new(),
             held: None,
+            progress: None,
+            cancel: None,
         })
+    }
+
+    pub fn set_progress_sink(&mut self, sink: ProgressSink) {
+        self.progress = Some(sink);
+    }
+
+    pub fn set_cancel_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.cancel = Some(flag);
+    }
+
+    fn emit(&mut self, progress: SessionProgress) {
+        if let Some(sink) = self.progress.as_mut() {
+            sink(progress);
+        }
     }
 
     pub fn preview(&mut self) -> Result<PreviewReport, SessionError> {
@@ -267,6 +310,15 @@ impl<'a> CraftSession<'a> {
         self.check_gate()?;
         let mut current = self.read_snapshot()?;
         let mut current_fingerprint = fingerprint(&current.text);
+        self.emit(SessionProgress {
+            kind: ProgressKind::Started,
+            step: 0,
+            currency_actions: 0,
+            currency: None,
+            evaluation: Some(current.evaluation.clone()),
+            elapsed_seconds: start.elapsed().as_secs_f64(),
+            warning: None,
+        });
         let mut same_fingerprint = 0u32;
         let mut steps = 0u32;
         let mut currency_actions = 0u32;
@@ -396,6 +448,16 @@ impl<'a> CraftSession<'a> {
                         elapsed_seconds: start.elapsed().as_secs_f64(),
                     })?;
                 }
+
+                self.emit(SessionProgress {
+                    kind: ProgressKind::Applied,
+                    step: steps,
+                    currency_actions,
+                    currency: Some(currency),
+                    evaluation: Some(after.evaluation.clone()),
+                    elapsed_seconds: start.elapsed().as_secs_f64(),
+                    warning: None,
+                });
 
                 current = after;
                 current_fingerprint = after_fingerprint;
@@ -532,6 +594,16 @@ impl<'a> CraftSession<'a> {
                         elapsed_seconds: start.elapsed().as_secs_f64(),
                     })?;
                 }
+
+                self.emit(SessionProgress {
+                    kind: ProgressKind::Applied,
+                    step: steps,
+                    currency_actions,
+                    currency: Some(currency),
+                    evaluation: Some(after.evaluation.clone()),
+                    elapsed_seconds: start.elapsed().as_secs_f64(),
+                    warning,
+                });
 
                 current = after;
                 current_fingerprint = after_fingerprint;
@@ -695,12 +767,20 @@ impl<'a> CraftSession<'a> {
     }
 
     fn check_gate(&mut self) -> Result<(), SessionError> {
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+        {
+            return Err(SessionError::Cancelled);
+        }
         if self.io.emergency_stop() {
             return Err(SessionError::EmergencyStop);
         }
         if self.config.require_foreground && !self.io.is_foreground()? {
             return Err(SessionError::FocusLost);
         }
+        self.io.preflight()?;
         Ok(())
     }
 
@@ -743,7 +823,9 @@ fn fingerprint(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
+    use std::rc::Rc;
 
     use crate::mock::MockGame;
     use poe_data::{BaseItem, DataVersion, Mod, ModDomain, ModType, PobData};
@@ -1034,5 +1116,37 @@ transmute = 0.01
         assert_eq!(preview.currencies, vec![Currency::Alt]);
         assert!(game.applied.is_empty());
         assert_eq!(game.current, no_life());
+    }
+
+    #[test]
+    fn external_cancel_aborts_before_actions() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(10));
+        let cancel = Arc::new(AtomicBool::new(true));
+        let mut session = session(&data, &mut game);
+        session.set_cancel_flag(cancel);
+        let result = session.run();
+        assert!(matches!(result, Err(SessionError::Cancelled)));
+        assert!(game.applied.is_empty());
+    }
+
+    #[test]
+    fn emits_started_and_applied_progress() {
+        let data = data();
+        let mut game = MockGame::new(no_life(), vec![with_life()], currencies(10));
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let sink = seen.clone();
+        let mut session = session(&data, &mut game);
+        session.set_progress_sink(Box::new(move |progress| {
+            sink.borrow_mut().push(progress);
+        }));
+        let report = session.run().unwrap();
+        assert!(report.success);
+        let progress = seen.borrow();
+        assert_eq!(progress.len(), 2);
+        assert_eq!(progress[0].kind, ProgressKind::Started);
+        assert_eq!(progress[1].kind, ProgressKind::Applied);
+        assert_eq!(progress[1].currency, Some(Currency::Alt));
+        assert_eq!(progress[1].currency_actions, 1);
     }
 }

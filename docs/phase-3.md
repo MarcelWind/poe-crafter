@@ -1,7 +1,8 @@
 # Phase 3: live crafting safety layer
 
-Status: implemented. In-game verification has not been run yet; the session core
-is covered by mock tests, and the Windows layer compiles on Windows.
+Status: implemented and verified in-game for single-item runs, including the
+Shift-held currency flow and randomized action delay. The session core is
+covered by mock tests; the Windows layer compiles on Windows.
 
 New crates:
 
@@ -61,6 +62,7 @@ Capture one target at a time:
 
 ```
 poe craft calibrate --target item
+poe craft calibrate --target panel
 poe craft calibrate --target alt
 poe craft calibrate --target transmute
 poe craft calibrate --target aug
@@ -70,9 +72,14 @@ poe craft calibrate --target scour
 poe craft calibrate --target chaos
 ```
 
-For each command, focus Path of Exile, hover the target slot, and press F8.
-Progress is saved immediately. `poe craft calibrate --list` shows captured
-points.
+For slot targets, focus Path of Exile, hover the target slot, and press F8.
+For `panel`, hover a stable pixel on the open panel instead. Progress is saved
+immediately. `poe craft calibrate --list` shows captured points.
+
+`panel` is an optional guard: hover a stable pixel on the open stash or
+inventory panel. The tool samples its color and checks it before each client
+action. If the panel closes or changes, the run aborts before the next click.
+The guard is off when uncalibrated; calibrate it for safer real runs.
 
 Coordinates are normalized to the game client area, so moving the window does
 not invalidate them. Use windowed or borderless mode; exclusive fullscreen is
@@ -93,11 +100,15 @@ poe craft calibrate --list
 poe craft run --plan plans\es-boots-alt.toml --dry-run
 poe craft run --plan plans\es-boots-alt.toml --once
 poe craft run --plan plans\es-boots-alt.toml --max-steps 1000
+poe-ui
 ```
 
-Real runs start immediately. The CLI brings Path of Exile to the foreground
-automatically. Dry runs do the same before reading the item. If Windows blocks
-the focus change, focus the game manually and retry.
+`poe-ui` is the desktop shell; it exposes the same calibration, inspection,
+plan, simulation, and run operations with live session events and a Stop button.
+
+Real runs start immediately. The CLI and UI bring Path of Exile to the
+foreground automatically. Dry runs do the same before reading the item. If
+Windows blocks the focus change, focus the game manually and retry.
 
 `--dry-run` reads the current item, evaluates the goal, and prints the next
 action without clicking. It only requires the item slot calibration.
@@ -166,9 +177,11 @@ presses, and clipboard polling; they are not part of the between-action delay.
 
 ## Known limits
 
-- There is no pixel/OCR check that the stash panel is open. If it closes, the
-  first click may land elsewhere and the session aborts afterwards. Keep the
-  stash open and use conservative `--once`/dry-run checks.
+- Panel detection is a single optional calibrated color probe, not full OCR or
+  template matching. It catches a closed panel but not every UI overlay. Keep
+  the stash open and use conservative `--once`/dry-run checks.
+- There is no cursor-item guard. If a click is missed while a stack is held,
+  F12 or a session abort releases Shift; inspect the cursor before retrying.
 - Only normal, magic, and rare items are accepted.
 - Only the Phase 2 action set is implemented: transmute, alt, aug, regal,
   alchemy, scouring, and chaos. Essence, fossil, bench, eldritch, and veiled

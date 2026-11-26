@@ -8,6 +8,7 @@ members = [
     "crates/poe-session",
     "crates/poe-input",
     "crates/poe-cli",
+    "crates/poe-ui",
 ]
 
 [workspace.package]

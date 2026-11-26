@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const TARGET_ITEM: &str = "item";
+pub const TARGET_PANEL: &str = "panel";
 pub const TARGET_TRANSMUTE: &str = "transmute";
 pub const TARGET_ALT: &str = "alt";
 pub const TARGET_AUG: &str = "aug";
@@ -52,6 +53,66 @@ impl NormPoint {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Color {
+    pub fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    /// Largest per-channel difference between two colors.
+    pub fn distance(self, other: Self) -> u8 {
+        self.r
+            .abs_diff(other.r)
+            .max(self.g.abs_diff(other.g))
+            .max(self.b.abs_diff(other.b))
+    }
+
+    pub fn from_bgr(value: u32) -> Self {
+        Self {
+            r: (value & 0xff) as u8,
+            g: ((value >> 8) & 0xff) as u8,
+            b: ((value >> 16) & 0xff) as u8,
+        }
+    }
+}
+
+pub const DEFAULT_PANEL_TOLERANCE: u8 = 16;
+
+fn default_panel_tolerance() -> u8 {
+    DEFAULT_PANEL_TOLERANCE
+}
+
+/// Optional pixel probe that must match before any client action. Calibrate it
+/// on a stable part of the open stash/inventory panel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelGuard {
+    pub point: NormPoint,
+    pub color: Color,
+    #[serde(default = "default_panel_tolerance")]
+    pub tolerance: u8,
+}
+
+impl PanelGuard {
+    pub fn new(point: NormPoint, color: Color) -> Self {
+        Self {
+            point,
+            color,
+            tolerance: DEFAULT_PANEL_TOLERANCE,
+        }
+    }
+
+    pub fn matches(self, actual: Color) -> bool {
+        self.color.distance(actual) <= self.tolerance
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Calibration {
@@ -66,6 +127,8 @@ pub struct Calibration {
     pub item: Option<NormPoint>,
     #[serde(default)]
     pub currencies: BTreeMap<String, NormPoint>,
+    #[serde(default)]
+    pub panel: Option<PanelGuard>,
 }
 
 #[derive(Debug, Error)]
@@ -93,6 +156,7 @@ impl Calibration {
             captured_height: None,
             item: None,
             currencies: BTreeMap::new(),
+            panel: None,
         }
     }
 
@@ -105,6 +169,21 @@ impl Calibration {
     pub fn all_targets() -> &'static [&'static str] {
         &[
             TARGET_ITEM,
+            TARGET_TRANSMUTE,
+            TARGET_ALT,
+            TARGET_AUG,
+            TARGET_REGAL,
+            TARGET_ALCH,
+            TARGET_SCOUR,
+            TARGET_CHAOS,
+        ]
+    }
+
+    /// Targets that can be captured, including optional guards.
+    pub fn capturable_targets() -> &'static [&'static str] {
+        &[
+            TARGET_ITEM,
+            TARGET_PANEL,
             TARGET_TRANSMUTE,
             TARGET_ALT,
             TARGET_AUG,
@@ -151,6 +230,18 @@ impl Calibration {
                 )));
             }
         }
+        if let Some(panel) = self.panel {
+            if !panel.point.is_valid() {
+                return Err(CalibrationError::Invalid(
+                    "panel point is outside 0..=1".to_string(),
+                ));
+            }
+            if panel.tolerance > 64 {
+                return Err(CalibrationError::Invalid(
+                    "panel tolerance must be <= 64".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -164,6 +255,11 @@ impl Calibration {
             self.item = Some(point);
             return Ok(());
         }
+        if target == TARGET_PANEL {
+            return Err(CalibrationError::Invalid(
+                "panel target needs a sampled color; use set_panel".to_string(),
+            ));
+        }
         if !Self::currency_targets().contains(&target) {
             return Err(CalibrationError::Invalid(format!(
                 "unknown target `{target}`"
@@ -173,9 +269,22 @@ impl Calibration {
         Ok(())
     }
 
+    pub fn set_panel(&mut self, point: NormPoint, color: Color) -> Result<(), CalibrationError> {
+        if !point.is_valid() {
+            return Err(CalibrationError::Invalid(
+                "panel point is outside 0..=1".to_string(),
+            ));
+        }
+        self.panel = Some(PanelGuard::new(point, color));
+        Ok(())
+    }
+
     pub fn point(&self, target: &str) -> Option<NormPoint> {
         if target == TARGET_ITEM {
             return self.item;
+        }
+        if target == TARGET_PANEL {
+            return self.panel.map(|panel| panel.point);
         }
         self.currencies.get(target).copied()
     }
@@ -257,6 +366,55 @@ mod tests {
         let loaded = Calibration::load(&path).unwrap();
         assert_eq!(loaded.point("alt"), Some(NormPoint::new(0.1, 0.2)));
         assert_eq!(loaded.captured_width, Some(1920));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn panel_guard_matches_within_tolerance() {
+        let guard = PanelGuard::new(NormPoint::new(0.5, 0.5), Color::new(100, 120, 140));
+        assert!(guard.matches(Color::new(110, 120, 130)));
+        assert!(!guard.matches(Color::new(140, 120, 140)));
+    }
+
+    #[test]
+    fn saves_and_loads_optional_panel_guard() {
+        let dir = std::env::temp_dir().join("poe-crafter-panel-calibration-test");
+        let path = dir.join("calibration.toml");
+        let mut calibration = Calibration::new(NormPoint::new(0.5, 0.5));
+        calibration
+            .set_panel(NormPoint::new(0.2, 0.3), Color::new(10, 20, 30))
+            .unwrap();
+        calibration.save(&path).unwrap();
+        let loaded = Calibration::load(&path).unwrap();
+        let panel = loaded.panel.expect("panel guard");
+        assert_eq!(panel.point, NormPoint::new(0.2, 0.3));
+        assert_eq!(panel.color, Color::new(10, 20, 30));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_calibration_without_panel_still_loads() {
+        let dir = std::env::temp_dir().join("poe-crafter-old-calibration-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calibration.toml");
+        std::fs::write(
+            &path,
+            r#"schema = 1
+game_title = "Path of Exile"
+
+[item]
+x = 0.5
+y = 0.5
+
+[currencies.alt]
+x = 0.1
+y = 0.2
+"#,
+        )
+        .unwrap();
+        let loaded = Calibration::load(&path).unwrap();
+        assert!(loaded.panel.is_none());
+        assert_eq!(loaded.point("alt"), Some(NormPoint::new(0.1, 0.2)));
         let _ = std::fs::remove_dir_all(dir);
     }
 

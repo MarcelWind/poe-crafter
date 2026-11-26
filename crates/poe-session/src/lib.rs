@@ -7,6 +7,6 @@ pub use currency::{currencies_for, Currency};
 pub use io::{GameIo, IoError, WindowInfo};
 pub use mock::MockGame;
 pub use session::{
-    CraftSession, PreviewReport, SessionConfig, SessionError, SessionLogger, SessionReport,
-    StopReason,
+    CraftSession, PreviewReport, ProgressKind, ProgressSink, SessionConfig, SessionError,
+    SessionLogger, SessionProgress, SessionReport, StopReason,
 };

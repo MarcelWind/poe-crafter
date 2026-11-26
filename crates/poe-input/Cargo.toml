@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 clipboard-win = "5.4"
+poe-session = { path = "../poe-session" }
 poe-timing = { path = "../poe-timing" }
 serde.workspace = true
 thiserror.workspace = true
@@ -18,4 +19,5 @@ winapi = { version = "0.3", features = [
     "basetsd",
     "processthreadsapi",
     "handleapi",
+    "wingdi",
 ] }

@@ -1,0 +1,18 @@
+[package]
+name = "poe-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "poe-ui"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.31"
+poe-craft = { path = "../poe-craft" }
+poe-data = { path = "../poe-data" }
+poe-input = { path = "../poe-input" }
+poe-item = { path = "../poe-item" }
+poe-session = { path = "../poe-session" }
+poe-timing = { path = "../poe-timing" }

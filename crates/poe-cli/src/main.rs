@@ -8,9 +8,9 @@ use poe_craft::{
     evaluate, next_action, simulate_with_options, ItemState, Plan, Pool, Requirement, Simulator,
 };
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
-use poe_input::{Calibration, InputError, Win32Game};
+use poe_input::{Calibration, Color, Win32Game, Win32GameIo, TARGET_PANEL};
 use poe_item::{parse_item, ResolvedItem, Resolver};
-use poe_session::{CraftSession, Currency, GameIo, IoError, SessionConfig, SessionLogger};
+use poe_session::{CraftSession, SessionConfig, SessionLogger};
 use poe_timing::DelaySettings;
 
 #[derive(Debug, Parser)]
@@ -66,7 +66,7 @@ enum CraftCommand {
     },
     /// Capture a calibrated point by focusing the game and pressing F8.
     Calibrate {
-        /// item, transmute, alt, aug, regal, alch, scour, or chaos.
+        /// item, panel, transmute, alt, aug, regal, alch, scour, or chaos.
         #[arg(long)]
         target: Option<String>,
         #[arg(long)]
@@ -802,6 +802,13 @@ fn craft_doctor(calibration_arg: Option<&Path>) -> Result<()> {
         } else {
             println!("Missing targets: {}", missing.join(", "));
         }
+        match calibration.panel {
+            Some(panel) => println!(
+                "Panel guard: {:?} at ({:.4}, {:.4}) +/- {}",
+                panel.color, panel.point.x, panel.point.y, panel.tolerance
+            ),
+            None => println!("Panel guard: not calibrated (optional)"),
+        }
     } else {
         println!("Calibration: missing (expected {})", path.display());
     }
@@ -826,39 +833,57 @@ fn craft_calibrate(
         print_calibration(&calibration, &path);
         if target.is_none() && !list {
             println!();
-            println!("Run with --target <item|transmute|alt|aug|regal|alch|scour|chaos>.");
+            println!("Run with --target <item|panel|transmute|alt|aug|regal|alch|scour|chaos>.");
             println!("Focus the game, hover the target slot, and press F8.");
         }
         return Ok(());
     }
 
     let target = target.unwrap();
-    if !Calibration::all_targets().contains(&target) {
+    if !Calibration::capturable_targets().contains(&target) {
         anyhow::bail!(
             "unknown calibration target `{target}`; expected one of {}",
-            Calibration::all_targets().join(", ")
+            Calibration::capturable_targets().join(", ")
         );
     }
 
     let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
     let info = game.window_info()?;
     calibration.set_capture_size(info.client_width, info.client_height);
+    let hint = if target == TARGET_PANEL {
+        "a stable panel pixel (not the item or a currency slot)"
+    } else {
+        "the target slot"
+    };
     println!(
-        "Focus {}, hover the {} slot, then press F8 within {}s.",
-        info.title, target, timeout_secs
+        "Focus {}, hover {}, then press F8 within {}s.",
+        info.title, hint, timeout_secs
     );
     let point = game
         .capture_point(Duration::from_secs(timeout_secs))
         .context("capturing calibration point")?;
-    calibration.set_target(target, point)?;
-    calibration.save(&path)?;
-    println!(
-        "saved {} at ({:.4}, {:.4}) to {}",
-        target,
-        point.x,
-        point.y,
-        path.display()
-    );
+    if target == TARGET_PANEL {
+        let color: Color = game.sample_color(point).context("sampling panel color")?;
+        calibration.set_panel(point, color)?;
+        calibration.save(&path)?;
+        println!(
+            "saved panel guard {:?} at ({:.4}, {:.4}) to {}",
+            color,
+            point.x,
+            point.y,
+            path.display()
+        );
+    } else {
+        calibration.set_target(target, point)?;
+        calibration.save(&path)?;
+        println!(
+            "saved {} at ({:.4}, {:.4}) to {}",
+            target,
+            point.x,
+            point.y,
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -870,6 +895,13 @@ fn print_calibration(calibration: &Calibration, path: &Path) {
             Some(point) => println!("  {target:<10} ({:.4}, {:.4})", point.x, point.y),
             None => println!("  {target:<10} missing"),
         }
+    }
+    match calibration.panel {
+        Some(panel) => println!(
+            "  {:<10} ({:.4}, {:.4}) {:?} +/- {}",
+            TARGET_PANEL, panel.point.x, panel.point.y, panel.color, panel.tolerance
+        ),
+        None => println!("  {:<10} missing (optional)", TARGET_PANEL),
     }
 }
 
@@ -896,10 +928,15 @@ fn craft_run(args: CraftRunArgs<'_>) -> Result<()> {
     let delays = DelaySettings::load_or_default(args.delays)
         .with_context(|| format!("loading delay profile {}", args.delays.display()))?;
     print_delays(&delays, args.delays);
+    if calibration.panel.is_some() {
+        println!("Panel guard: on");
+    } else {
+        println!("Panel guard: off (optional; run `poe craft calibrate --target panel`)");
+    }
 
     let mut game = Win32Game::find(&calibration.game_title).context("finding game window")?;
     game.set_action_delay(delays.action);
-    let mut io = WindowsGameIo { game, calibration };
+    let mut io = Win32GameIo::new(game, calibration);
 
     let max_steps = if args.once || args.dry_run {
         1
@@ -1049,99 +1086,6 @@ fn print_session_report(report: &poe_session::SessionReport) {
     }
     for warning in &report.warnings {
         println!("Warning: {warning}");
-    }
-}
-
-struct WindowsGameIo {
-    game: Win32Game,
-    calibration: Calibration,
-}
-
-impl GameIo for WindowsGameIo {
-    fn window_info(&mut self) -> std::result::Result<poe_session::WindowInfo, IoError> {
-        let info = self.game.window_info().map_err(map_input)?;
-        Ok(poe_session::WindowInfo {
-            title: info.title,
-            client_width: info.client_width,
-            client_height: info.client_height,
-            foreground: info.foreground,
-        })
-    }
-
-    fn is_foreground(&mut self) -> std::result::Result<bool, IoError> {
-        Ok(self.game.is_foreground())
-    }
-
-    fn emergency_stop(&mut self) -> bool {
-        self.game.emergency_stop()
-    }
-
-    fn read_item(&mut self) -> std::result::Result<String, IoError> {
-        let item = self
-            .calibration
-            .item
-            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
-        self.game.read_item(item).map_err(map_input)
-    }
-
-    fn read_currency(&mut self, currency: Currency) -> std::result::Result<u32, IoError> {
-        let point = self
-            .calibration
-            .point(currency.key())
-            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
-        self.game.read_currency(point).map_err(map_input)
-    }
-
-    fn apply_currency(&mut self, currency: Currency) -> std::result::Result<(), IoError> {
-        let point = self
-            .calibration
-            .point(currency.key())
-            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
-        let item = self
-            .calibration
-            .item
-            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
-        self.game.apply_currency(point, item).map_err(map_input)
-    }
-
-    fn begin_currency(&mut self, currency: Currency) -> std::result::Result<(), IoError> {
-        let point = self
-            .calibration
-            .point(currency.key())
-            .ok_or_else(|| IoError::MissingCalibration(currency.key().to_string()))?;
-        self.game.begin_hold(point).map_err(map_input)
-    }
-
-    fn use_currency(&mut self) -> std::result::Result<(), IoError> {
-        let item = self
-            .calibration
-            .item
-            .ok_or_else(|| IoError::MissingCalibration("item".to_string()))?;
-        self.game.use_held(item).map_err(map_input)
-    }
-
-    fn end_currency(&mut self) -> std::result::Result<(), IoError> {
-        self.game.end_hold().map_err(map_input)
-    }
-
-    fn sleep(&mut self, millis: u64) {
-        std::thread::sleep(Duration::from_millis(millis));
-    }
-}
-
-fn map_input(error: InputError) -> IoError {
-    match error {
-        InputError::WindowNotFound => IoError::WindowNotFound,
-        InputError::NotForeground => IoError::NotForeground,
-        InputError::EmptyClientArea => IoError::Input("window client area is empty".to_string()),
-        InputError::PointOutsideWindow => {
-            IoError::Input("calibration point is outside the window".to_string())
-        }
-        InputError::MissingCalibration(target) => IoError::MissingCalibration(target),
-        InputError::Clipboard(message) => IoError::Clipboard(message),
-        InputError::Input(message) => IoError::Input(message),
-        InputError::Timeout(message) => IoError::Timeout(message),
-        InputError::Cancelled => IoError::Cancelled,
     }
 }
 
