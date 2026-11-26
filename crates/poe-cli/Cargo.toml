@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+poe-craft = { path = "../poe-craft" }
 poe-data = { path = "../poe-data" }
 poe-item = { path = "../poe-item" }
 serde.workspace = true

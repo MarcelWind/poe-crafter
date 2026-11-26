@@ -1,0 +1,12 @@
+[package]
+name = "poe-craft"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+poe-data = { path = "../poe-data" }
+poe-item = { path = "../poe-item" }
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true

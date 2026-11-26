@@ -1,0 +1,35 @@
+schema = 1
+name = "ES boots: two prefixes (alt + regal)"
+
+[base]
+item_class = "Boots"
+base_names = ["Sorcerer Boots"]
+item_level = 86
+
+[goal]
+min_prefixes = 2
+max_prefixes = 2
+
+[[goal.required]]
+slot = "prefix"
+group = "LocalEnergyShieldPercent"
+min_tier = 2
+
+[[goal.required]]
+slot = "prefix"
+group = "IncreasedLife"
+min_value = 80
+
+[strategy]
+method = "alt_aug_regal"
+max_attempts = 50000
+augment = "never"
+regal_when_score = 1
+magic_two_mod_chance = 0.5
+
+[costs]
+transmute = 0.01
+alt = 0.05
+aug = 0.1
+regal = 0.8
+scour = 0.08

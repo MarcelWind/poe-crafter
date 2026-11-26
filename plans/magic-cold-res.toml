@@ -1,0 +1,27 @@
+schema = 1
+name = "Magic cold resistance ring"
+
+[base]
+item_class = "Ring"
+base_names = ["Amethyst Ring"]
+item_level = 84
+
+[goal]
+min_suffixes = 1
+max_suffixes = 1
+
+[[goal.required]]
+slot = "suffix"
+group = "ColdResistance"
+min_tier = 2
+min_value = 40
+
+[strategy]
+method = "alt_regal"
+max_attempts = 5000
+regal_when_score = 1
+magic_two_mod_chance = 0.5
+
+[costs]
+transmute = 0.01
+alt = 0.05

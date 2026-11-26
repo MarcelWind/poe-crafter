@@ -100,5 +100,4 @@ roll percentiles, and ties.
 
 ## Next
 
-Phase 2: declarative plan model, goal evaluator, strategy state machine, and a
-Monte Carlo simulator over PoB spawn weights.
+Phase 2 is implemented in `poe-craft`; see `docs/phase-2.md`.

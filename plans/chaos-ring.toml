@@ -1,0 +1,31 @@
+schema = 1
+name = "Chaos ring: life and cold resistance"
+
+[base]
+item_class = "Ring"
+base_names = ["Amethyst Ring"]
+item_level = 86
+
+[goal]
+min_prefixes = 1
+min_suffixes = 1
+
+[[goal.required]]
+slot = "prefix"
+group = "IncreasedLife"
+min_value = 70
+
+[[goal.required]]
+slot = "suffix"
+group = "ColdResistance"
+min_value = 40
+
+[strategy]
+method = "chaos"
+max_attempts = 5000
+chaos_mod_counts = [4, 5, 6]
+start = "normal"
+
+[costs]
+alch = 0.2
+chaos = 1.0
