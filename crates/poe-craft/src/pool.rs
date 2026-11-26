@@ -53,20 +53,17 @@ pub struct RolledMod {
     pub tier: u32,
     pub values: Vec<f64>,
     pub percentiles: Vec<f64>,
-    pub template: String,
 }
 
 impl RolledMod {
     pub fn to_state(&self) -> StateMod {
         StateMod {
-            mod_id: self.mod_id.clone(),
             slot: self.slot,
             group: self.group.clone(),
             affix: self.affix.clone(),
             tier: Some(self.tier),
             values: self.values.clone(),
             percentiles: self.percentiles.clone(),
-            template: self.template.clone(),
         }
     }
 }
@@ -617,13 +614,6 @@ impl PoolMod {
         (values, percentiles)
     }
 
-    fn template(&self) -> String {
-        self.stat_lines
-            .first()
-            .map(|line| line.template.clone())
-            .unwrap_or_default()
-    }
-
     pub fn roll(&self, rng: &mut Rng) -> RolledMod {
         let (values, percentiles) = self.roll_values(rng);
         RolledMod {
@@ -634,21 +624,18 @@ impl PoolMod {
             tier: self.tier,
             values,
             percentiles,
-            template: self.template(),
         }
     }
 
     pub fn roll_state(&self, rng: &mut Rng) -> StateMod {
         let (values, percentiles) = self.roll_values(rng);
         StateMod {
-            mod_id: self.mod_id.clone(),
             slot: self.slot,
             group: self.group.clone(),
             affix: self.affix.clone(),
             tier: Some(self.tier),
             values,
             percentiles,
-            template: self.template(),
         }
     }
 }
@@ -869,7 +856,6 @@ mod tests {
                 tier: 1,
                 values: vec![85.0],
                 percentiles: vec![0.5],
-                template: String::new(),
             }
             .to_state(),
         );

@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use poe_craft::{evaluate, next_action, simulate, ItemState, Plan, Pool, Requirement, Simulator};
+use poe_craft::{
+    evaluate, next_action, simulate_with_options, ItemState, Plan, Pool, Requirement, Simulator,
+};
 use poe_data::{load_cache, save_cache, DataVersion, ModDomain, ModType};
 use poe_item::{parse_item, ResolvedItem, Resolver};
 
@@ -69,6 +71,9 @@ enum PlanCommand {
         /// Deterministic RNG seed.
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        /// Stop after roughly this many attempts; 0 means unlimited.
+        #[arg(long, default_value_t = 100_000_000)]
+        max_total_attempts: u64,
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
@@ -142,8 +147,16 @@ fn main() -> Result<()> {
                 plan,
                 runs,
                 seed,
+                max_total_attempts,
                 json,
-            } => plan_simulate(cache.as_path(), plan.as_path(), runs, seed, json),
+            } => plan_simulate(
+                cache.as_path(),
+                plan.as_path(),
+                runs,
+                seed,
+                max_total_attempts,
+                json,
+            ),
             PlanCommand::Check {
                 cache,
                 plan,
@@ -366,10 +379,31 @@ fn print_requirement(label: &str, requirement: &Requirement) {
     println!("  {label}: {}", parts.join(" "));
 }
 
-fn plan_simulate(cache: &Path, plan_path: &Path, runs: u64, seed: u64, json: bool) -> Result<()> {
+fn plan_simulate(
+    cache: &Path,
+    plan_path: &Path,
+    runs: u64,
+    seed: u64,
+    max_total_attempts: u64,
+    json: bool,
+) -> Result<()> {
     let data = load_cache(cache).with_context(|| format!("loading cache {}", cache.display()))?;
     let plan = load_plan(plan_path)?;
-    let report = simulate(&data, plan, runs, seed).context("simulating plan")?;
+    let budget = (max_total_attempts > 0).then_some(max_total_attempts);
+    let show_progress = !json && runs >= 100;
+    let mut last_progress = 0u64;
+    let mut progress = |completed: u64, total: u64| {
+        if !show_progress {
+            return;
+        }
+        let percent = completed.saturating_mul(100) / total.max(1);
+        if percent >= last_progress.saturating_add(10) || completed == total {
+            last_progress = percent;
+            eprintln!("progress: {completed}/{total} runs");
+        }
+    };
+    let report = simulate_with_options(&data, plan, runs, seed, budget, Some(&mut progress))
+        .context("simulating plan")?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -381,12 +415,25 @@ fn plan_simulate(cache: &Path, plan_path: &Path, runs: u64, seed: u64, json: boo
 fn print_report(report: &poe_craft::SimulationReport) {
     println!("Plan: {}", report.plan_name);
     println!("Base: {} (item level {})", report.base, report.item_level);
-    println!("Runs: {} (seed {})", report.runs, report.seed);
+    println!(
+        "Runs: {} requested, {} completed (seed {})",
+        report.runs, report.completed_runs, report.seed
+    );
+    if report.truncated {
+        println!(
+            "Budget: stopped after {} attempts (limit {})",
+            report.total_attempts,
+            report
+                .attempt_budget
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
     println!(
         "Success: {:.2}% ({}/{})",
         report.success_rate * 100.0,
         report.successes,
-        report.runs
+        report.completed_runs
     );
     println!(
         "Attempts: mean {:.2}{}",

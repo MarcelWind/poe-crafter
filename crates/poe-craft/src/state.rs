@@ -28,14 +28,12 @@ impl CraftRarity {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateMod {
-    pub mod_id: String,
     pub slot: Slot,
     pub group: String,
     pub affix: String,
     pub tier: Option<u32>,
     pub values: Vec<f64>,
     pub percentiles: Vec<f64>,
-    pub template: String,
 }
 
 impl StateMod {
@@ -119,18 +117,12 @@ impl ItemState {
                 }
             }
             mods.push(StateMod {
-                mod_id: matched.mod_id.clone(),
                 slot,
                 group: matched.group.clone(),
                 affix: matched.affix.clone(),
                 tier: matched.tier,
                 values,
                 percentiles: matched.roll_percentiles.clone(),
-                template: group
-                    .lines
-                    .first()
-                    .map(|line| line.normalized.template.clone())
-                    .unwrap_or_default(),
             });
         }
 

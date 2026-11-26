@@ -136,6 +136,10 @@ cargo run -p poe-cli -- plan simulate `
   --runs 1000 --seed 42
 ```
 
+Simulation is bounded by `--max-total-attempts` (default 100,000,000;
+`0` means unlimited). Progress goes to stderr, and the report distinguishes
+requested runs from completed runs when the budget stops the run early.
+
 Evaluate a real item and recommend an action:
 
 ```
@@ -181,7 +185,20 @@ game-exact probabilities.
   acquisition.
 - Plans currently use a fixed strategy method; a general step DSL is future
   work.
+- The attempt budget is checked between runs, so the final started run can
+  overshoot it by that run's own attempt count.
 - Input automation, verification, and safety budgets are Phase 3.
+
+## Performance notes
+
+Hot-path allocations were removed from the simulator: pool picks now return
+borrowed mods, per-roll used-group sets use fixed stack arrays, reward-state
+strings are not copied twice, and goal evaluation uses a stack-backed used-mod
+mask for normal item sizes. Release timings on the development machine:
+
+- chaos ring, 10,000 runs (~1.55M attempts): about 4.8 s
+- ES boots, 10,000 runs (~5.2M attempts): about 4.3 s
+- magic cold resistance, 50,000 runs (~3.4M attempts): about 2.3 s
 
 ## Phase 3 entry
 

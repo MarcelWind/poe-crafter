@@ -157,6 +157,10 @@ pub struct SimulationReport {
     pub item_level: u32,
     pub seed: u64,
     pub runs: u64,
+    pub completed_runs: u64,
+    pub truncated: bool,
+    pub attempt_budget: Option<u64>,
+    pub total_attempts: u64,
     pub successes: u64,
     pub success_rate: f64,
     pub max_attempts_reached: u64,
@@ -386,20 +390,26 @@ impl Simulator {
 
     fn roll_magic(&self, rng: &mut Rng, two_mod_chance: f64) -> Option<ItemState> {
         let mut state = ItemState::new(CraftRarity::Magic, Some(self.pool.item_level));
-        let mut used: Vec<&str> = Vec::with_capacity(2);
+        let mut used = [""; 6];
+        let mut used_count = 0usize;
         let count = if rng.chance(two_mod_chance) { 2 } else { 1 };
         let mut produced = 0usize;
         for _ in 0..count {
-            let Some(slot) =
-                self.pool
-                    .choose_slot(rng, &used, state.open_prefixes(), state.open_suffixes())
-            else {
+            let Some(slot) = self.pool.choose_slot(
+                rng,
+                &used[..used_count],
+                state.open_prefixes(),
+                state.open_suffixes(),
+            ) else {
                 break;
             };
-            let Some(pool_mod) = self.pool.pick(slot, rng, &used) else {
+            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
                 break;
             };
-            used.push(pool_mod.group.as_str());
+            if used_count < used.len() {
+                used[used_count] = pool_mod.group.as_str();
+                used_count += 1;
+            }
             state.mods.push(pool_mod.roll_state(rng));
             produced += 1;
         }
@@ -418,54 +428,68 @@ impl Simulator {
 
     fn roll_rare_count(&self, rng: &mut Rng, count: usize) -> ItemState {
         let mut state = ItemState::new(CraftRarity::Rare, Some(self.pool.item_level));
-        let mut used: Vec<&str> = Vec::with_capacity(count);
+        let mut used = [""; 6];
+        let mut used_count = 0usize;
         for _ in 0..count {
-            let Some(slot) =
-                self.pool
-                    .choose_slot(rng, &used, state.open_prefixes(), state.open_suffixes())
-            else {
+            let Some(slot) = self.pool.choose_slot(
+                rng,
+                &used[..used_count],
+                state.open_prefixes(),
+                state.open_suffixes(),
+            ) else {
                 break;
             };
-            let Some(pool_mod) = self.pool.pick(slot, rng, &used) else {
+            let Some(pool_mod) = self.pool.pick(slot, rng, &used[..used_count]) else {
                 break;
             };
-            used.push(pool_mod.group.as_str());
+            if used_count < used.len() {
+                used[used_count] = pool_mod.group.as_str();
+                used_count += 1;
+            }
             state.mods.push(pool_mod.roll_state(rng));
         }
         state
     }
 
     fn add_mod(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
-        let used = state
-            .mods
-            .iter()
-            .filter(|entry| !entry.group.is_empty())
-            .map(|entry| entry.group.as_str())
-            .collect::<Vec<_>>();
-        let slot =
-            self.pool
-                .choose_slot(rng, &used, state.open_prefixes(), state.open_suffixes())?;
-        let pool_mod = self.pool.pick(slot, rng, &used)?;
+        let (used, used_count) = used_groups(state);
+        let slot = self.pool.choose_slot(
+            rng,
+            &used[..used_count],
+            state.open_prefixes(),
+            state.open_suffixes(),
+        )?;
+        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
         Some(pool_mod.roll_state(rng))
     }
 
     fn regal(&self, rng: &mut Rng, state: &mut ItemState) -> Option<StateMod> {
-        let used = state
-            .mods
-            .iter()
-            .filter(|entry| !entry.group.is_empty())
-            .map(|entry| entry.group.as_str())
-            .collect::<Vec<_>>();
+        let (used, used_count) = used_groups(state);
         let open_prefixes = 3u8.saturating_sub(state.prefix_count());
         let open_suffixes = 3u8.saturating_sub(state.suffix_count());
         let slot = self
             .pool
-            .choose_slot(rng, &used, open_prefixes, open_suffixes)?;
-        let pool_mod = self.pool.pick(slot, rng, &used)?;
-        drop(used);
+            .choose_slot(rng, &used[..used_count], open_prefixes, open_suffixes)?;
+        let pool_mod = self.pool.pick(slot, rng, &used[..used_count])?;
         state.rarity = CraftRarity::Rare;
         Some(pool_mod.roll_state(rng))
     }
+}
+
+fn used_groups(state: &ItemState) -> ([&str; 6], usize) {
+    let mut used = [""; 6];
+    let mut count = 0usize;
+    for entry in &state.mods {
+        if entry.group.is_empty() {
+            continue;
+        }
+        if count == used.len() {
+            break;
+        }
+        used[count] = entry.group.as_str();
+        count += 1;
+    }
+    (used, count)
 }
 
 pub fn simulate(
@@ -474,8 +498,27 @@ pub fn simulate(
     runs: u64,
     seed: u64,
 ) -> Result<SimulationReport, SimError> {
+    simulate_with_options(data, plan, runs, seed, None, None)
+}
+
+/// Simulate with an optional total-attempt budget and progress callback.
+/// The budget is checked between runs, so the last started run may overshoot
+/// it by up to that run's own attempt count.
+pub fn simulate_with_options(
+    data: &PobData,
+    plan: Plan,
+    runs: u64,
+    seed: u64,
+    max_total_attempts: Option<u64>,
+    mut progress: Option<&mut dyn FnMut(u64, u64)>,
+) -> Result<SimulationReport, SimError> {
     if runs == 0 {
         return Err(SimError::Invalid("runs must be > 0".to_string()));
+    }
+    if max_total_attempts == Some(0) {
+        return Err(SimError::Invalid(
+            "max_total_attempts must be > 0 or omitted".to_string(),
+        ));
     }
     let max_attempts = plan.strategy.max_attempts;
     let costs = plan.costs;
@@ -485,14 +528,24 @@ pub fn simulate(
     let mut max_attempts_reached = 0u64;
     let mut failed_no_mods = 0u64;
     let mut total_attempts = 0u64;
+    let mut completed_runs = 0u64;
+    let mut truncated = false;
     let mut total_cost = 0.0;
     let mut total_currency = CurrencyCounts::default();
     let mut success_attempts = Vec::new();
     let mut success_cost = 0.0;
     let mut success_currency = CurrencyCounts::default();
+    let progress_step = (runs / 10).max(1);
 
     for _ in 0..runs {
+        if let Some(budget) = max_total_attempts {
+            if total_attempts >= budget {
+                truncated = true;
+                break;
+            }
+        }
         let outcome = simulator.run_once(&mut rng);
+        completed_runs += 1;
         total_attempts += outcome.attempts as u64;
         total_cost += outcome.currency.cost(&costs);
         accumulate(&mut total_currency, &outcome.currency);
@@ -505,6 +558,22 @@ pub fn simulate(
             failed_no_mods += 1;
         } else if outcome.attempts >= max_attempts {
             max_attempts_reached += 1;
+        }
+        if let Some(callback) = progress.as_mut() {
+            if completed_runs.is_multiple_of(progress_step) || completed_runs == runs {
+                callback(completed_runs, runs);
+            }
+        }
+    }
+
+    if completed_runs == 0 {
+        return Err(SimError::Invalid(
+            "attempt budget exhausted before the first run completed".to_string(),
+        ));
+    }
+    if truncated {
+        if let Some(callback) = progress.as_mut() {
+            callback(completed_runs, runs);
         }
     }
 
@@ -521,7 +590,7 @@ pub fn simulate(
         None
     };
 
-    let mean_currency = mean_map(&total_currency, runs);
+    let mean_currency = mean_map(&total_currency, completed_runs);
     let mean_currency_success = if successes > 0 {
         Some(mean_map(&success_currency, successes))
     } else {
@@ -534,17 +603,21 @@ pub fn simulate(
         item_level: simulator.pool.item_level,
         seed,
         runs,
+        completed_runs,
+        truncated,
+        attempt_budget: max_total_attempts,
+        total_attempts,
         successes,
-        success_rate: successes as f64 / runs as f64,
+        success_rate: successes as f64 / completed_runs as f64,
         max_attempts_reached,
         failed_no_mods,
         max_attempts,
-        mean_attempts: total_attempts as f64 / runs as f64,
+        mean_attempts: total_attempts as f64 / completed_runs as f64,
         mean_success_attempts,
         p50_success_attempts: percentile_success(&success_attempts, 0.50),
         p90_success_attempts: percentile_success(&success_attempts, 0.90),
         p99_success_attempts: percentile_success(&success_attempts, 0.99),
-        mean_cost: total_cost / runs as f64,
+        mean_cost: total_cost / completed_runs as f64,
         mean_cost_success: if successes > 0 {
             Some(success_cost / successes as f64)
         } else {
@@ -717,14 +790,12 @@ mod tests {
 
         let mut with_life = magic.clone();
         with_life.mods.push(StateMod {
-            mod_id: "Life".to_string(),
             slot: crate::plan::Slot::Prefix,
             group: "Life".to_string(),
             affix: "Hale".to_string(),
             tier: Some(1),
             values: vec![85.0],
             percentiles: vec![0.5],
-            template: String::new(),
         });
         assert_eq!(next_action(&alt_plan, &with_life), NextAction::Regal);
 
@@ -742,6 +813,23 @@ mod tests {
         let outcome = simulator.run_once(&mut rng);
         assert!(outcome.currency.scour >= 1);
         assert!(outcome.currency.alch >= 1);
+    }
+
+    #[test]
+    fn respects_total_attempt_budget() {
+        let report =
+            simulate_with_options(&data(), plan(Method::AltAugRegal), 100, 42, Some(1), None)
+                .unwrap();
+        assert!(report.truncated);
+        assert!(report.completed_runs < report.runs);
+        assert_eq!(report.attempt_budget, Some(1));
+    }
+
+    #[test]
+    fn rejects_zero_attempt_budget() {
+        let result =
+            simulate_with_options(&data(), plan(Method::AltAugRegal), 100, 42, Some(0), None);
+        assert!(result.is_err());
     }
 
     #[test]

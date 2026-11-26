@@ -135,15 +135,25 @@ struct SearchResult {
     matched_weighted: Vec<usize>,
 }
 
+const STACK_USED: usize = 64;
+
 impl<'a> Search<'a> {
+    fn with_used<R>(&self, f: impl FnOnce(&mut [bool]) -> R) -> R {
+        if self.mods.len() <= STACK_USED {
+            let mut used = [false; STACK_USED];
+            f(&mut used[..self.mods.len()])
+        } else {
+            let mut used = vec![false; self.mods.len()];
+            f(&mut used)
+        }
+    }
+
     fn best(&self) -> Option<SearchResult> {
-        let mut used = vec![false; self.mods.len()];
-        self.assign_required(0, &mut used, 0)
+        self.with_used(|used| self.assign_required(0, used, 0))
     }
 
     fn best_required_count(&self) -> usize {
-        let mut used = vec![false; self.mods.len()];
-        self.required_count(0, &mut used)
+        self.with_used(|used| self.required_count(0, used))
     }
 
     fn required_count(&self, index: usize, used: &mut [bool]) -> usize {
@@ -166,38 +176,28 @@ impl<'a> Search<'a> {
     /// Best score even when some required constraints are unmet. Used by
     /// strategy decisions such as "regal when a good prefix appears".
     fn best_partial(&self) -> i32 {
-        let requirements = self
-            .required
-            .iter()
-            .map(|requirement| (requirement, requirement.weight))
-            .chain(
-                self.weighted
-                    .iter()
-                    .map(|requirement| (requirement, requirement.weight)),
-            )
-            .collect::<Vec<_>>();
-        let mut used = vec![false; self.mods.len()];
-        self.partial_score(&requirements, 0, &mut used)
+        self.with_used(|used| self.partial_score(0, used))
     }
 
-    fn partial_score(
-        &self,
-        requirements: &[(&Requirement, i32)],
-        index: usize,
-        used: &mut [bool],
-    ) -> i32 {
-        if index == requirements.len() {
+    fn partial_score(&self, index: usize, used: &mut [bool]) -> i32 {
+        let total = self.required.len() + self.weighted.len();
+        if index == total {
             return 0;
         }
-        let mut best = self.partial_score(requirements, index + 1, used);
-        let (requirement, weight) = requirements[index];
+        let (requirement, weight) = if index < self.required.len() {
+            let requirement = &self.required[index];
+            (requirement, requirement.weight)
+        } else {
+            let requirement = &self.weighted[index - self.required.len()];
+            (requirement, requirement.weight)
+        };
+        let mut best = self.partial_score(index + 1, used);
         for mod_index in 0..self.mods.len() {
             if used[mod_index] || !requirement_matches(requirement, &self.mods[mod_index]) {
                 continue;
             }
             used[mod_index] = true;
-            let candidate =
-                weight.saturating_add(self.partial_score(requirements, index + 1, used));
+            let candidate = weight.saturating_add(self.partial_score(index + 1, used));
             used[mod_index] = false;
             best = best.max(candidate);
         }
@@ -275,14 +275,12 @@ mod tests {
 
     fn entry(group: &str, slot: Slot, tier: u32, value: f64) -> StateMod {
         StateMod {
-            mod_id: group.to_string(),
             slot,
             group: group.to_string(),
             affix: String::new(),
             tier: Some(tier),
             values: vec![value],
             percentiles: vec![0.5],
-            template: String::new(),
         }
     }
 

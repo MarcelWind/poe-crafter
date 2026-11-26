@@ -15,7 +15,7 @@ pub use pool::{
 };
 pub use rng::Rng;
 pub use sim::{
-    next_action, simulate, CurrencyCounts, NextAction, RunOutcome, SimError, SimulationReport,
-    Simulator,
+    next_action, simulate, simulate_with_options, CurrencyCounts, NextAction, RunOutcome, SimError,
+    SimulationReport, Simulator,
 };
 pub use state::{CraftRarity, ItemState, StateMod};
